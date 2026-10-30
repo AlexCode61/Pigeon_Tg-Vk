@@ -6,22 +6,43 @@ from aiogram.types import Message
 from aiogram import F
 
 from pigeon_tg_vk.bridge.config import get_required_env
+from pigeon_tg_vk.bridge.core.models import IncomingMessage
+from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def start_handler(message: Message) -> None:
     await message.answer(
-        "Привет! Telegram-адаптер Pigeon_Tg-Vk работает."
+        "Ты пидор"
     )
 
 async def text_handler(message: Message) -> None:
     if message.text is None:
         return
+
+    incoming = IncomingMessage(
+        platform="telegram",
+        chat_id=str(message.chat.id),
+        message_id=str(message.message_id),
+        text=message.text,
+        sender_id=(
+            str(message.from_user.id)
+            if message.from_user is not None
+            else None
+        ),
+    )
+
+    await handle_incoming_message(incoming)
+
     logger.info(
-        "Received text message: chat_id=%s, message_id=%s",
-        message.chat.id,
-        message.message_id,
+        "Received message: platform=%s, chat_id=%s, "
+        "message_id=%s, sender_id=%s, text=%s",
+        incoming.platform,
+        incoming.chat_id,
+        incoming.message_id,
+        incoming.sender_id,
+        incoming.text,
     )
 
 
