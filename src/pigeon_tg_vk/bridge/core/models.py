@@ -8,3 +8,8 @@ class IncomingMessage:
     message_id: str
     text: str | None
     sender_id: str | None
+
+@dataclass(frozen=True)
+class Target:
+    platform: Literal["telegram", "vk"]
+    chat_id: str

@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 async def run_vk_bot() -> None:
     token = get_required_env("VK_GROUP_TOKEN")
+    group_id = int(get_required_env("VK_GROUP_ID"))
+
     bot = Bot(token=token)
 
     @bot.on.chat_message()

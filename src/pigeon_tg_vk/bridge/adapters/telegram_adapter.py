@@ -34,7 +34,6 @@ async def text_handler(message: Message) -> None:
     )
 
     await handle_incoming_message(incoming)
-
     logger.info(
         "Received message: platform=%s, chat_id=%s, "
         "message_id=%s, sender_id=%s, text=%s",
