@@ -6,15 +6,22 @@ from vkbottle.bot import Bot, Message
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage
 from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
+from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logger = logging.getLogger(__name__)
-
 
 async def run_vk_bot() -> None:
     token = get_required_env("VK_GROUP_TOKEN")
     group_id = int(get_required_env("VK_GROUP_ID"))
 
     bot = Bot(token=token)
+    async def send_to_vk(chat_id: str, text: str) -> None:
+        await bot.api.messages.send(
+            peer_id=int(chat_id),
+            message=text,
+            random_id=0,
+        )
+    register_sender("vk", send_to_vk)
 
     @bot.on.chat_message()
     async def handle_vk_message(message: Message) -> None:

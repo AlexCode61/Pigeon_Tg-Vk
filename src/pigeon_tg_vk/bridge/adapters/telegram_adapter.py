@@ -8,6 +8,7 @@ from aiogram import F
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage
 from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
+from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,6 +50,10 @@ async def run_telegram_bot() -> None:
     token = get_required_env("TELEGRAM_BOT_TOKEN")
 
     bot = Bot(token=token)
+    
+    async def send_to_telegram(chat_id: str, text: str) -> None:
+        await bot.send_message(chat_id=int(chat_id), text=text)
+    register_sender("telegram", send_to_telegram)
     dispatcher = Dispatcher()
 
     dispatcher.message.register(start_handler, CommandStart())
