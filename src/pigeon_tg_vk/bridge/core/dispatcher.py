@@ -37,7 +37,7 @@ async def dispatch_message(message: IncomingMessage) -> None:
         return
 
     try:
-        await sender(target.chat_id, message.text)
+        await sender(target.chat_id, f"{message.sender_name}: {message.text}")
     except Exception:
         logger.exception(
             "Failed to deliver message: source=%s:%s -> target=%s:%s, message_id=%s",

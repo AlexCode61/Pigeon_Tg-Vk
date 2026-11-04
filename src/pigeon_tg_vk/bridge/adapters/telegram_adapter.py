@@ -15,11 +15,16 @@ logger = logging.getLogger(__name__)
 
 async def start_handler(message: Message) -> None:
     await message.answer(
-        "Ты пидор"
+        "Лона самая прекрасная девушка в мире"
+    )
+    logger.info(
+        "Start message: chat_type=%s, chat_id=%s",
+        message.chat.type,
+        message.chat.id,
     )
 
 async def text_handler(message: Message) -> None:
-    if message.text is None:
+    if message.text is None or message.chat.type not in ("group", "supergroup"):
         return
 
     incoming = IncomingMessage(
@@ -32,16 +37,22 @@ async def text_handler(message: Message) -> None:
             if message.from_user is not None
             else None
         ),
+        sender_name=(
+            str(message.from_user.full_name)
+            if message.from_user is not None
+            else None
+        )
     )
 
     await handle_incoming_message(incoming)
     logger.info(
         "Received message: platform=%s, chat_id=%s, "
-        "message_id=%s, sender_id=%s, text=%s",
+        "message_id=%s, sender_id=%s, sender_name=%s, text=%s",
         incoming.platform,
         incoming.chat_id,
         incoming.message_id,
         incoming.sender_id,
+        incoming.sender_name,
         incoming.text,
     )
 
