@@ -16,6 +16,7 @@ dependencies = [
     "vkbottle",
     "SQLAlchemy",
     "asyncpg",
+    "python-dotenv",
 ]
 
 [tool.hatch.build.targets.wheel]
