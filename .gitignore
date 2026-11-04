@@ -1,5 +1,6 @@
 # Virtual environment
 .venv/
+.vkbottle/
 
 # Python cache
 __pycache__/
