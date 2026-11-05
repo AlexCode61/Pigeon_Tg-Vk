@@ -31,7 +31,7 @@ async def text_handler(message: Message) -> None:
             str(message.from_user.id)
             if message.from_user is not None
             else None
-        ),
+        )
     )
 
     await handle_incoming_message(incoming)
@@ -42,7 +42,7 @@ async def text_handler(message: Message) -> None:
         incoming.chat_id,
         incoming.message_id,
         incoming.sender_id,
-        incoming.text,
+        incoming.text
     )
 
 
@@ -51,8 +51,9 @@ async def run_telegram_bot() -> None:
 
     bot = Bot(token=token)
     
-    async def send_to_telegram(chat_id: str, text: str) -> None:
-        await bot.send_message(chat_id=int(chat_id), text=text)
+    async def send_to_telegram(chat_id: str, text: str) -> int:
+        msg = await bot.send_message(chat_id=int(chat_id), text=text)
+        return msg.message_id
     register_sender("telegram", send_to_telegram)
     dispatcher = Dispatcher()
 

@@ -4,10 +4,13 @@ from collections.abc import Awaitable, Callable
 from pigeon_tg_vk.bridge.core.models import IncomingMessage
 from pigeon_tg_vk.bridge.core.router import get_target_platform
 
+from pigeon_tg_vk.bridge.storage.database import async_session_maker
+from pigeon_tg_vk.bridge.storage.repository import create_message_mapping
+
 logger = logging.getLogger(__name__)
 
-# (chat_id, text) -> None
-SendText = Callable[[str, str], Awaitable[None]]
+# (chat_id, text) -> int
+SendText = Callable[[str, str], Awaitable[int]]
 
 _senders: dict[str, SendText] = {}
 
@@ -37,7 +40,14 @@ async def dispatch_message(message: IncomingMessage) -> None:
         return
 
     try:
-        await sender(target.chat_id, message.text)
+        sent_message_id = await sender(target.chat_id, message.text)
+        async with async_session_maker() as session:
+           async with session.begin():
+                if(target.platform == "telegram"):
+                    await create_message_mapping(session=session, telegram_chat_id=int(target.chat_id), telegram_msg_id=sent_message_id, vk_peer_id=int(message.chat_id), vk_msg_id=int(message.message_id))              
+                else:
+                    await create_message_mapping(session=session, telegram_chat_id=int(message.chat_id), telegram_msg_id=int(message.message_id), vk_peer_id=int(target.chat_id), vk_msg_id=sent_message_id)
+                  
     except Exception:
         logger.exception(
             "Failed to deliver message: source=%s:%s -> target=%s:%s, message_id=%s",

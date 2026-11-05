@@ -16,12 +16,24 @@ async def run_vk_bot() -> None:
 
     bot = Bot(token=token)
 
-    async def send_to_vk(chat_id: str, text: str) -> None:
-        await bot.api.messages.send(
+    async def send_to_vk(chat_id: str, text: str) -> int:
+        msg_id = await bot.api.messages.send(
             peer_id=int(chat_id),
             message=text,
             random_id=0,
         )
+       
+        message_info = await bot.api.messages.get_by_id(
+            message_ids=[msg_id],
+        )
+
+        logger.info(
+            "VK sent message IDs: id=%s, conversation_message_id=%s",
+            msg_id,
+            message_info.items[0].conversation_message_id,
+        )
+
+        return message_info.items[0].conversation_message_id
 
     register_sender("vk", send_to_vk)
 
@@ -30,15 +42,22 @@ async def run_vk_bot() -> None:
         incoming = IncomingMessage(
             platform="vk",
             chat_id=str(message.peer_id),
-            message_id=str(message.id),
+            message_id=str(message.conversation_message_id),
             text=message.text or None,
-            sender_id=str(message.from_id),
+            sender_id=str(message.from_id)
         )
+
 
         logger.info(
             "Received VK message: chat_id=%s, message_id=%s",
             incoming.chat_id,
             incoming.message_id,
+        )
+
+        logger.info(
+            "VK incoming IDs: id=%s, conversation_message_id=%s",
+            message.id,
+            message.conversation_message_id,
         )
 
         await handle_incoming_message(incoming)

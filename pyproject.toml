@@ -14,7 +14,7 @@ authors = [{name = "Alexandr Lyashok"}]
 dependencies = [
     "aiogram",
     "vkbottle",
-    "SQLAlchemy",
+    "sqlalchemy[asyncio]",
     "asyncpg",
     "python-dotenv",
     "alembic"
