@@ -55,7 +55,7 @@ async def dispatch_message(message: IncomingMessage) -> None:
             else:
                 reply_target_message_id = reply_mapping.telegram_message_id
         
-        sent_message_id = await sender(target.chat_id, message.text, reply_target_message_id)
+        sent_message_id = await sender(target.chat_id,  f"{message.sender_name}: {message.text}", reply_target_message_id)
         async with async_session_maker() as session:
            async with session.begin():
                 if(target.platform == "telegram"):
@@ -63,7 +63,6 @@ async def dispatch_message(message: IncomingMessage) -> None:
                 else:
                     await create_message_mapping(session=session, telegram_chat_id=int(message.chat_id), telegram_msg_id=int(message.message_id), vk_peer_id=int(target.chat_id), vk_msg_id=sent_message_id)
                   
-        await sender(target.chat_id, f"{message.sender_name}: {message.text}")
     except Exception:
         logger.exception(
             "Failed to deliver message: source=%s:%s -> target=%s:%s, message_id=%s",
