@@ -8,6 +8,7 @@ class IncomingMessage:
     message_id: str
     text: str | None
     sender_id: str | None
+    reply_to_message_id: str | None = None
 
 @dataclass(frozen=True)
 class Target:

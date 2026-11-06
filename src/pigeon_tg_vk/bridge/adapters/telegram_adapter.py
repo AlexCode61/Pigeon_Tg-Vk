@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, ReplyParameters
 from aiogram import F
 
 from pigeon_tg_vk.bridge.config import get_required_env
@@ -34,6 +34,9 @@ async def text_handler(message: Message) -> None:
         )
     )
 
+    if message.reply_to_message:
+        incoming.reply_to_message_id = str(message.reply_to_message.message_id)    
+
     await handle_incoming_message(incoming)
     logger.info(
         "Received message: platform=%s, chat_id=%s, "
@@ -51,8 +54,13 @@ async def run_telegram_bot() -> None:
 
     bot = Bot(token=token)
     
-    async def send_to_telegram(chat_id: str, text: str) -> int:
-        msg = await bot.send_message(chat_id=int(chat_id), text=text)
+    async def send_to_telegram(chat_id: str, text: str, reply_to_msg_id: int | None = None) -> int:
+        reply = (
+            ReplyParameters(message_id=reply_to_msg_id)
+            if reply_to_msg_id is not None
+            else None
+            )
+        msg = await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
         return msg.message_id
     register_sender("telegram", send_to_telegram)
     dispatcher = Dispatcher()

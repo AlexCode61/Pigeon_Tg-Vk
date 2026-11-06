@@ -5,12 +5,12 @@ from pigeon_tg_vk.bridge.core.models import IncomingMessage
 from pigeon_tg_vk.bridge.core.router import get_target_platform
 
 from pigeon_tg_vk.bridge.storage.database import async_session_maker
-from pigeon_tg_vk.bridge.storage.repository import create_message_mapping
+from pigeon_tg_vk.bridge.storage.repository import create_message_mapping, get_by_telegram_message, get_by_vk_message
 
 logger = logging.getLogger(__name__)
 
 # (chat_id, text) -> int
-SendText = Callable[[str, str], Awaitable[int]]
+SendText = Callable[[str, str, int | None], Awaitable[int]]
 
 _senders: dict[str, SendText] = {}
 
@@ -40,7 +40,22 @@ async def dispatch_message(message: IncomingMessage) -> None:
         return
 
     try:
-        sent_message_id = await sender(target.chat_id, message.text)
+        reply_mapping = None
+        if message.reply_to_message_id is not None:
+            async with async_session_maker() as session:
+                if message.platform == "telegram":
+                    reply_mapping = await get_by_telegram_message(session=session, telegram_chat_id=int(message.chat_id), telegram_msg_id=int(message.reply_to_message_id))
+                else:
+                    reply_mapping = await get_by_vk_message(session=session, vk_peer_id=int(message.chat_id), vk_msg_id=int(message.reply_to_message_id))
+
+        reply_target_message_id = None
+        if reply_mapping is not None:
+            if message.platform == "telegram":
+                reply_target_message_id = reply_mapping.vk_message_id
+            else:
+                reply_target_message_id = reply_mapping.telegram_message_id
+        
+        sent_message_id = await sender(target.chat_id, message.text, reply_target_message_id)
         async with async_session_maker() as session:
            async with session.begin():
                 if(target.platform == "telegram"):
