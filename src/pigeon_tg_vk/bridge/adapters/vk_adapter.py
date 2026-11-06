@@ -49,6 +49,8 @@ async def run_vk_bot() -> None:
 
     @bot.on.chat_message()
     async def handle_vk_message(message: Message) -> None:
+        users = await bot.api.users.get(user_ids=[message.from_id])
+        
         incoming = IncomingMessage(
             platform="vk",
             chat_id=str(message.peer_id),
@@ -56,7 +58,11 @@ async def run_vk_bot() -> None:
             text=message.text or None,
             sender_id=str(message.from_id),
             reply_to_message_id=(
-                str(message.reply_message.conversation_message_id) if message.reply_message is not None and message.reply_message.conversation_message_id is not None else None
+                str(message.reply_message.conversation_message_id) if message.reply_message is not None and message.reply_message.conversation_message_id is not None else None),
+            sender_name=(
+                    f"{users[0].first_name} {users[0].last_name}"
+                    if users
+                    else None
             )
         )
 
