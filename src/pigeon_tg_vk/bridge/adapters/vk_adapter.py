@@ -6,6 +6,7 @@ from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward
+from vkbottle import PhotoMessageUploader
 
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
@@ -55,6 +56,8 @@ async def run_vk_bot() -> None:
 
     bot = Bot(token=token)
 
+    photo_uploader = PhotoMessageUploader(bot.api)
+
     async def send_to_vk(chat_id: str, text: str | None,  reply_to_message_id: int | None, attachments: list[MediaAttachment]) -> int:
         forward = None
 
@@ -65,13 +68,24 @@ async def run_vk_bot() -> None:
                 is_reply=True
             ).to_raw()
         
+        media = []
+        for item in attachments:
+            if item.media_type == "photo":
+                media.append(await photo_uploader.upload(file_source=item.file_path.read_bytes(), peer_id=int(chat_id)))
+        
+        attachment = ",".join(media) if media else None
         msg_id = await bot.api.messages.send(
-            peer_id=int(chat_id),
-            message=text,
-            random_id=0,
-            forward=forward
-        )
-       
+                peer_id=int(chat_id),
+                message=text,
+                random_id=0,
+                forward=forward,
+                attachment=attachment
+            )
+
+        for item in attachments:
+            if item.media_type == "photo":
+                item.file_path.unlink(missing_ok=True)
+            
         message_info = await bot.api.messages.get_by_id(
             message_ids=[msg_id],
         )
