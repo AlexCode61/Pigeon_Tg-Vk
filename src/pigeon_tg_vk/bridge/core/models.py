@@ -1,5 +1,13 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
+
+@dataclass
+class MediaAttachment:
+    media_type: Literal["photo", "video", "voice", "document", "audio"]
+    file_path: Path
+    file_name: str | None = None
+    mime_type: str | None = None
 
 @dataclass
 class IncomingMessage:
@@ -10,6 +18,7 @@ class IncomingMessage:
     sender_id: str | None
     sender_name: str | None
     reply_to_message_id: str | None = None
+    attachments: list[MediaAttachment] = field(default_factory=list)
 
 @dataclass(frozen=True)
 class Target:

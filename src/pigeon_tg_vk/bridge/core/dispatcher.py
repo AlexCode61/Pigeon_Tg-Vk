@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 
-from pigeon_tg_vk.bridge.core.models import IncomingMessage
+from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
 from pigeon_tg_vk.bridge.core.router import get_target_platform
 
 from pigeon_tg_vk.bridge.storage.database import async_session_maker
@@ -10,12 +10,12 @@ from pigeon_tg_vk.bridge.storage.repository import create_message_mapping, get_b
 logger = logging.getLogger(__name__)
 
 # (chat_id, text) -> int
-SendText = Callable[[str, str, int | None], Awaitable[int]]
+SendMessage = Callable[[str, str | None, int | None, list[MediaAttachment]], Awaitable[int]]
 
-_senders: dict[str, SendText] = {}
+_senders: dict[str, SendMessage] = {}
 
 
-def register_sender(platform: str, sender: SendText) -> None:
+def register_sender(platform: str, sender: SendMessage) -> None:
     _senders[platform] = sender
 
 
@@ -30,7 +30,7 @@ async def dispatch_message(message: IncomingMessage) -> None:
         )
         return
 
-    if not message.text:
+    if not message.text and not message.attachments:
         logger.debug("Skipping message without text: %s", message.message_id)
         return
 
@@ -55,7 +55,10 @@ async def dispatch_message(message: IncomingMessage) -> None:
             else:
                 reply_target_message_id = reply_mapping.telegram_message_id
         
-        sent_message_id = await sender(target.chat_id,  f"{message.sender_name}: {message.text}", reply_target_message_id)
+        text = message.text
+        if text and message.sender_name: text = f"{message.sender_name}: {text}"
+        
+        sent_message_id = await sender(target.chat_id, text, reply_target_message_id, message.attachments)
         async with async_session_maker() as session:
            async with session.begin():
                 if(target.platform == "telegram"):

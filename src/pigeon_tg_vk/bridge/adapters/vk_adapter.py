@@ -1,22 +1,61 @@
 import logging
+import aiohttp
+from pathlib import Path
+from uuid import uuid4
+from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward
 
 from pigeon_tg_vk.bridge.config import get_required_env
-from pigeon_tg_vk.bridge.core.models import IncomingMessage
+from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
 from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
 from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logger = logging.getLogger(__name__)
 
+async def photo_vk(url: str) -> MediaAttachment:
+    unique_id = uuid4().hex
+    project_root = Path(__file__).resolve().parents[4]
+    temp_dir = project_root / "temp"
+
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    filepath = temp_dir / unique_id
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url=url) as response:
+                response.raise_for_status()
+                image_data = await response.read()
+                filepath.write_bytes(image_data)
+                
+                mime = guess(filepath)
+                
+                if mime is None or not mime.mime.startswith("image/"):
+                    logger.error("Could not determine the image format")
+                    raise ValueError("Could not determine the image format")
+                new_filepath = filepath.with_suffix(f".{mime.extension}")
+                filepath.rename(new_filepath)
+                filepath = new_filepath
+                return MediaAttachment(
+                        media_type="photo",
+                        file_path=filepath,
+                        file_name=filepath.name,
+                        mime_type=mime.mime
+                    )
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP: {e}")
+            raise
+        except OSError:
+            logger.exception("File error while processing VK photo")
+            raise
 
 async def run_vk_bot() -> None:
     token = get_required_env("VK_GROUP_TOKEN")
 
     bot = Bot(token=token)
 
-    async def send_to_vk(chat_id: str, text: str,  reply_to_message_id: int | None = None) -> int:
+    async def send_to_vk(chat_id: str, text: str | None,  reply_to_message_id: int | None, attachments: list[MediaAttachment]) -> int:
         forward = None
 
         if reply_to_message_id is not None:
@@ -50,6 +89,28 @@ async def run_vk_bot() -> None:
     @bot.on.chat_message()
     async def handle_vk_message(message: Message) -> None:
         users = await bot.api.users.get(user_ids=[message.from_id])
+        attachments:list[MediaAttachment] = []
+
+        for attachment in message.attachments:
+            logger.info("Attachment type: %s", attachment.type)
+
+            if attachment.type == "photo":
+                sizes = attachment.photo.sizes
+
+                largest_size = max(
+                    sizes,
+                    key=lambda size: size.width * size.height,
+                )
+
+                logger.info(
+                    "Selected photo size: %sx%s, type=%s",
+                    largest_size.width,
+                    largest_size.height,
+                    largest_size.type,
+                )
+
+                photo = await photo_vk(largest_size.url)
+                attachments.append(photo)
         
         incoming = IncomingMessage(
             platform="vk",
@@ -63,7 +124,8 @@ async def run_vk_bot() -> None:
                     f"{users[0].first_name} {users[0].last_name}"
                     if users
                     else None
-            )
+            ),
+            attachments=attachments
         )
 
 
