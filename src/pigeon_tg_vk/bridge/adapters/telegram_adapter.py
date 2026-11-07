@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Message, ReplyParameters, FSInputFile
+from aiogram.types import Message, ReplyParameters, FSInputFile, InputMediaPhoto
 from aiogram import F
 
 from pathlib import Path
@@ -137,20 +137,30 @@ async def run_telegram_bot() -> None:
             else None
             )
 
-        attachment = None
+        photos: list[MediaAttachment] = []
 
         for item in attachments:
             if item.media_type == "photo":
-                attachment = item
-                break
+                photos.append(item)
         
-        if attachment is not None:
-            photo = FSInputFile(attachment.file_path)
-            msg = await bot.send_photo(chat_id=int(chat_id),caption=text, reply_parameters=reply, photo=photo)
-            attachment.file_path.unlink(missing_ok=True)
+        if photos:
+            if len(photos) > 1:
+                media = [
+                        InputMediaPhoto(media=FSInputFile(photo.file_path), caption=text if index == 0 else None)
+                        for index, photo in enumerate(photos)
+                    ]
+                msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
+                for photo in photos:
+                    photo.file_path.unlink(missing_ok=True)
+                return msg[0].message_id
+            else:
+                photo = FSInputFile(photos[0].file_path)
+                msg = await bot.send_photo(chat_id=int(chat_id),caption=text, reply_parameters=reply, photo=photo)
+                photos[0].file_path.unlink(missing_ok=True)
+                return msg.message_id
         else: 
             msg = await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
-        return msg.message_id
+            return msg.message_id
     
     register_sender("telegram", send_to_telegram)
     dispatcher = Dispatcher()
