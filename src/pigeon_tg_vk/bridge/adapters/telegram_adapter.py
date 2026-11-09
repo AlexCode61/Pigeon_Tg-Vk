@@ -1,8 +1,11 @@
 import logging
+import asyncio
+
+from collections import defaultdict
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Message, ReplyParameters, FSInputFile, InputMediaPhoto
+from aiogram.types import Downloadable, Message, ReplyParameters, FSInputFile, InputMediaPhoto
 from aiogram import F
 
 from pathlib import Path
@@ -17,6 +20,9 @@ from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+media_groups: dict[str, list[Message]] = defaultdict(list)
+album_tasks: dict[str, asyncio.Task] = {}
 
 async def start_handler(message: Message) -> None:
     await message.answer(
@@ -64,59 +70,84 @@ async def text_handler(message: Message) -> None:
         incoming.sender_name
     )
 
+async def handle_document(message: Message, bot: Bot):
+    if message.chat.type not in ("group", "supergroup"):
+        return
+    document = message.document
+    filepath = await download_file(document, bot)
+    
+    return MediaAttachment(
+        media_type="document",
+        file_path=filepath,
+        file_name=document.file_name,
+        mime_type=document.mime_type
+    )
+
+
+
 async def photo_handler(message: Message, bot: Bot) -> None:
     if message.chat.type not in ("group", "supergroup"):
         return
+    if message.media_group_id is not None:
+        await collect_album(message=message, bot=bot)
+    else:
+        attachment = await photo_telegram(message=message, bot=bot)
+        incoming = IncomingMessage(
+            platform="telegram",
+            chat_id=str(message.chat.id),
+            message_id=str(message.message_id),
+            text=message.caption,
+            sender_id=(
+                str(message.from_user.id)
+                if message.from_user is not None
+                else None
+            ),
+            sender_name=(
+                str(message.from_user.full_name)
+                if message.from_user is not None
+                else None
+            ),
+            reply_to_message_id=(
+                str(message.reply_to_message.message_id) if message.reply_to_message else None
+            ),
+            attachments=[attachment]
+        )
+        await handle_incoming_message(incoming)
+        logger.info(
+        "Received photo: platform=%s, chat_id=%s, message_id=%s, file=%s",
+        incoming.platform,
+        incoming.chat_id,
+        incoming.message_id,
+        attachment.file_name
+        )
 
-    attachment = await photo_telegram(message=message, bot=bot)
-    incoming = IncomingMessage(
-        platform="telegram",
-        chat_id=str(message.chat.id),
-        message_id=str(message.message_id),
-        text=message.caption,
-        sender_id=(
-            str(message.from_user.id)
-            if message.from_user is not None
-            else None
-        ),
-        sender_name=(
-            str(message.from_user.full_name)
-            if message.from_user is not None
-            else None
-        ),
-        reply_to_message_id=(
-            str(message.reply_to_message.message_id) if message.reply_to_message else None
-        ),
-        attachments=[attachment]
-    )
-    await handle_incoming_message(incoming)
-    logger.info(
-    "Received photo: platform=%s, chat_id=%s, message_id=%s, file=%s",
-    incoming.platform,
-    incoming.chat_id,
-    incoming.message_id,
-    attachment.file_name,
-)
-
-async def photo_telegram(message: Message, bot: Bot) -> MediaAttachment:
-    photo = message.photo[-1]
+async def download_file(file: str | Downloadable, bot: Bot) -> Path:
     unique_id = uuid4().hex
     project_root = Path(__file__).resolve().parents[4]
     temp_dir = project_root / "temp"
 
     temp_dir.mkdir(parents=True, exist_ok=True)
     filepath = temp_dir / unique_id
-    await bot.download(photo, destination=filepath)
+
+    await bot.download(file, destination=filepath)
+
+    return filepath
+
+
+async def photo_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    photo = message.photo[-1]
+
+    filepath = await download_file(photo,bot)
 
     mime = guess(filepath)
 
     if mime is None or not mime.mime.startswith("image/"):
-        logger.error("Could not determine the image format")
+        logger.error(f"Could not determine the image format")
         raise ValueError("Could not determine the image format")
-    new_filepath = filepath.with_suffix(f".{mime.extension}")
-    filepath.rename(new_filepath)
-    filepath = new_filepath
     
+    new_filepath = filepath.with_suffix(f".{mime.extension}")
+    filepath = filepath.rename(new_filepath)
+
     return MediaAttachment(
         media_type="photo",
         file_path=filepath,
@@ -124,6 +155,78 @@ async def photo_telegram(message: Message, bot: Bot) -> MediaAttachment:
         mime_type=mime.mime
     )
 
+
+async def collect_album(message: Message, bot: Bot):
+    media_group_id = message.media_group_id
+
+    if media_group_id is None:
+        return
+
+    media_groups.setdefault(media_group_id, []).append(message)
+
+    task = album_tasks.get(media_group_id)
+    if task is not None:
+        task.cancel()
+
+    album_tasks[media_group_id] = asyncio.create_task(process_album_after_delay(media_group_id, bot))
+
+async def process_album_after_delay(keys: str, bot: Bot):
+    try:
+        await asyncio.sleep(0.8)
+        messages = media_groups.pop(keys, [])
+        if not messages:
+            return
+
+        messages.sort(key=lambda msg: msg.message_id)
+        first_msg = messages[0]
+        attachments: list[MediaAttachment] = []
+        additional_message_ids = []
+        text: str | None = None
+        for index, msg in enumerate(messages):
+            attachments.append(await photo_telegram(msg, bot))
+
+            if index > 0:
+                additional_message_ids.append(str(msg.message_id))
+
+            if text is None and msg.caption is not None:
+                text = msg.caption
+        
+        incoming = IncomingMessage(
+                platform="telegram",
+                chat_id=str(first_msg.chat.id),
+                message_id=str(first_msg.message_id),
+                text=text,
+                sender_id=(
+                    str(first_msg.from_user.id)
+                    if first_msg.from_user is not None
+                    else None
+                ),
+                sender_name=(
+                    str(first_msg.from_user.full_name)
+                    if first_msg.from_user is not None
+                    else None
+                ),
+                reply_to_message_id=(
+                    str(first_msg.reply_to_message.message_id) if first_msg.reply_to_message else None
+                ),
+                additional_message_ids=additional_message_ids,
+                attachments=attachments
+            )
+        await handle_incoming_message(incoming)
+        logger.info(
+            "Received photos: platform=%s, chat_id=%s, message_id=%s, media_group_id=%s, photos_count=%s",
+            incoming.platform,
+            incoming.chat_id,
+            incoming.message_id,
+            keys,
+            len(attachments)
+            )
+
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if album_tasks.get(keys) is asyncio.current_task():
+            album_tasks.pop(keys, None)
 
 async def run_telegram_bot() -> None:
     token = get_required_env("TELEGRAM_BOT_TOKEN")

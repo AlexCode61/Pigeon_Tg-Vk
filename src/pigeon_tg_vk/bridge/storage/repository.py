@@ -25,6 +25,6 @@ async def  get_by_vk_message(session: AsyncSession, vk_peer_id: int, vk_msg_id: 
     stmt = select(MessageMapping).where(
         MessageMapping.vk_message_id == vk_msg_id,
         MessageMapping.vk_peer_id == vk_peer_id
-        )
+        ).order_by(MessageMapping.id).limit(1)
     result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    return result.scalars().first()

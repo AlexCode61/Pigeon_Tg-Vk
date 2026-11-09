@@ -1,12 +1,14 @@
 import logging
 import aiohttp
+import asyncio
+import json
 from pathlib import Path
 from uuid import uuid4
 from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward
-from vkbottle import PhotoMessageUploader
+from vkbottle import PhotoMessageUploader, VKAPIError
 
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
@@ -58,6 +60,22 @@ async def run_vk_bot() -> None:
 
     photo_uploader = PhotoMessageUploader(bot.api)
 
+    async def upload_photo_with_retry(uploader, path: Path, peer_id: int) -> str:
+        attempt = 0
+        delay = 1.0
+        max_delay = 30.0
+        while True:
+            attempt += 1
+            try:
+                return await uploader.upload(file_source=str(path), peer_id=peer_id)
+            except (json.JSONDecodeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.warning(
+                    "VK photo upload failed (attempt %s): file=%s, error=%r, retry in %.1fs",
+                    attempt, path.name, e, delay,
+                )
+                await asyncio.sleep(delay + 0.5)
+                delay = min(delay * 2, max_delay)
+
     async def send_to_vk(chat_id: str, text: str | None,  reply_to_message_id: int | None, attachments: list[MediaAttachment]) -> int:
         forward = None
 
@@ -69,22 +87,38 @@ async def run_vk_bot() -> None:
             ).to_raw()
         
         media = []
-        for item in attachments:
-            if item.media_type == "photo":
-                media.append(await photo_uploader.upload(file_source=item.file_path.read_bytes(), peer_id=int(chat_id)))
-        
-        attachment = ",".join(media) if media else None
-        msg_id = await bot.api.messages.send(
-                peer_id=int(chat_id),
-                message=text,
-                random_id=0,
-                forward=forward,
-                attachment=attachment
+        logger.info(
+            "VK upload started: chat_id=%s, photos_count=%s",
+            chat_id,
+            len(attachments),
+        )
+        try:
+            for item in attachments:
+                if item.media_type == "photo":
+                    logger.info(
+                        "Uploading photo: file=%s, size=%s bytes, exists=%s",
+                        item.file_path.name,
+                        item.file_path.stat().st_size,
+                        item.file_path.exists(),
+                    )
+                    media.append(await upload_photo_with_retry(photo_uploader, item.file_path, int(chat_id)))
+            logger.info(
+                "VK upload finished: chat_id=%s, photos_count=%s",
+                chat_id,
+                len(media),
             )
-
-        for item in attachments:
-            if item.media_type == "photo":
-                item.file_path.unlink(missing_ok=True)
+        finally:
+            for item in attachments:
+                if item.media_type == "photo":
+                    item.file_path.unlink(missing_ok=True)
+            attachment = ",".join(media) if media else None
+            msg_id = await bot.api.messages.send(
+                    peer_id=int(chat_id),
+                    message=text,
+                    random_id=0,
+                    forward=forward,
+                    attachment=attachment
+                )
             
         message_info = await bot.api.messages.get_by_id(
             message_ids=[msg_id],
@@ -102,10 +136,30 @@ async def run_vk_bot() -> None:
 
     @bot.on.chat_message()
     async def handle_vk_message(message: Message) -> None:
+        logger.info(
+            "VK message received: peer_id=%s, conversation_message_id=%s, "
+            "from_id=%s, attachments=%s",
+            message.peer_id,
+            message.conversation_message_id,
+            message.from_id,
+            len(message.attachments),
+        )
+        history = await bot.api.messages.get_by_id(
+            peer_id=message.peer_id,
+            cmids=[message.conversation_message_id],
+        )
+
+        vk_message = history.items[0]
+
+        logger.info(
+            "VK message attachments from API: %s",
+            len(vk_message.attachments),
+        )
+        
         users = await bot.api.users.get(user_ids=[message.from_id])
         attachments:list[MediaAttachment] = []
 
-        for attachment in message.attachments:
+        for attachment in vk_message.attachments:
             logger.info("Attachment type: %s", attachment.type)
 
             if attachment.type == "photo":
@@ -144,9 +198,10 @@ async def run_vk_bot() -> None:
 
 
         logger.info(
-            "Received VK message: chat_id=%s, message_id=%s",
+            "Received VK message: chat_id=%s, message_id=%s, attachments=%s",
             incoming.chat_id,
             incoming.message_id,
+            len(incoming.attachments),
         )
 
         await handle_incoming_message(incoming)

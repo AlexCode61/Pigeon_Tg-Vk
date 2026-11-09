@@ -18,7 +18,9 @@ class IncomingMessage:
     sender_id: str | None
     sender_name: str | None
     reply_to_message_id: str | None = None
+    additional_message_ids: list[str] = field(default_factory=list)
     attachments: list[MediaAttachment] = field(default_factory=list)
+    
 
 @dataclass(frozen=True)
 class Target:

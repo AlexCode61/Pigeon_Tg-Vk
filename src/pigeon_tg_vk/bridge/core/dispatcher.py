@@ -56,15 +56,22 @@ async def dispatch_message(message: IncomingMessage) -> None:
                 reply_target_message_id = reply_mapping.telegram_message_id
         
         text = message.text
-        if text and message.sender_name: text = f"{message.sender_name}: {text}"
-        
+
+        if message.sender_name:
+            if text:
+                text = f"{message.sender_name}: {text}"
+            else:
+                text = f"{message.sender_name}"
+
         sent_message_id = await sender(target.chat_id, text, reply_target_message_id, message.attachments)
         async with async_session_maker() as session:
            async with session.begin():
                 if(target.platform == "telegram"):
                     await create_message_mapping(session=session, telegram_chat_id=int(target.chat_id), telegram_msg_id=sent_message_id, vk_peer_id=int(message.chat_id), vk_msg_id=int(message.message_id))              
                 else:
-                    await create_message_mapping(session=session, telegram_chat_id=int(message.chat_id), telegram_msg_id=int(message.message_id), vk_peer_id=int(target.chat_id), vk_msg_id=sent_message_id)
+                    message_ids = [message.message_id, *message.additional_message_ids]
+                    for msg_id in message_ids:
+                        await create_message_mapping(session=session, telegram_chat_id=int(message.chat_id), telegram_msg_id=int(msg_id), vk_peer_id=int(target.chat_id), vk_msg_id=sent_message_id)
                   
     except Exception:
         logger.exception(

@@ -18,11 +18,6 @@ class MessageMapping(Base):
         UniqueConstraint(
             "telegram_chat_id",
             "telegram_message_id",
-            name="uq_telegram_message"
+            name="uq_telegram_message",
         ),
-        UniqueConstraint(
-            "vk_peer_id",
-            "vk_message_id",
-            name="uq_vk_message"
-        )
     )
