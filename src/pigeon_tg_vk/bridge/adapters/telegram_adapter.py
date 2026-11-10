@@ -195,7 +195,37 @@ async def audio_telegram(message: Message, bot: Bot) -> MediaAttachment:
         file_path=filepath,
         file_name=audio.file_name,
         mime_type=mime.mime
-    )    
+    )
+
+async def voice_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    voice = message.voice
+
+    filepath = await download_file(voice, bot)
+
+    new_filepath = filepath.with_suffix(".ogg")
+    filepath = filepath.rename(new_filepath)
+
+    return MediaAttachment(
+        media_type="voice",
+        file_path=filepath,
+        file_name=filepath.name,
+        mime_type=voice.mime_type
+    )
+
+async def videonote_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    video_note = message.video_note
+
+    filepath = await download_file(video_note, bot)
+
+    new_filepath = filepath.with_suffix(".mp4")
+    filepath = filepath.rename(new_filepath)
+
+    return MediaAttachment(
+        media_type="video",
+        file_path=filepath,
+        file_name=filepath.name,
+        mime_type="video/mp4"
+    )
 
 async def collect_album(message: Message, bot: Bot):
     media_group_id = message.media_group_id
@@ -278,6 +308,10 @@ async def media_telegram(message: Message, bot: Bot) -> MediaAttachment:
         return await video_telegram(message=message, bot=bot)
     elif message.audio:
         return await audio_telegram(message=message, bot=bot)
+    elif message.voice:
+        return await voice_telegram(message=message, bot=bot)
+    elif message.video_note:
+        return await videonote_telegram(message=message, bot=bot)
     raise  ValueError("Unsupported media type in album")
 
 async def run_telegram_bot() -> None:
@@ -325,7 +359,7 @@ async def run_telegram_bot() -> None:
         text_handler,
         F.text & ~F.text.startswith("/"),
     )
-    dispatcher.message.register(partial(media_handler, bot=bot), F.photo | F.video| F.document | F.audio)
+    dispatcher.message.register(partial(media_handler, bot=bot), F.photo | F.video| F.document | F.audio | F.voice | F.video_note)
 
     try:
         await dispatcher.start_polling(bot)

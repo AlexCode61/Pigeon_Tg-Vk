@@ -8,7 +8,7 @@ from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward
-from vkbottle import PhotoMessageUploader, DocMessagesUploader
+from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUploader
 from vkbottle import VKAPIError
 
 from pigeon_tg_vk.bridge.adapters.host import upload_temp_link
@@ -39,7 +39,7 @@ UNSUPPORTED_EXTENSIONS = {
     ".js",
     ".vbs",
 
-    #аудио файлы
+    # Аудио файлы
     ".mp3", 
     # ".m4a",
      ".wav",
@@ -97,6 +97,7 @@ async def run_vk_bot() -> None:
 
     photo_uploader = PhotoMessageUploader(bot.api)
     doc_uploader = DocMessagesUploader(bot.api)
+    voice_uploader = VoiceMessageUploader(bot.api)
 
     async def upload_file_with_retry(uploader, path: Path,  peer_id:int, **upload_params) -> str:
         attempt = 0
@@ -159,6 +160,8 @@ async def run_vk_bot() -> None:
                             logger.warning("VK rejected file, falling back to link: file=%s", filename, exc_info=True)
                     url = await upload_temp_link(item.file_path, filename)
                     text = add_line(text, f"{filename}: {url}")
+                elif item.media_type == "voice":
+                    media.append(await upload_file_with_retry(voice_uploader, item.file_path, peer_id=int(chat_id), title=filename or item.file_path.name))
 
                 logger.info(
                     "Uploading {item.media_type}: file=%s, size=%s bytes, exists=%s",
