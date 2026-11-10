@@ -70,9 +70,47 @@ async def text_handler(message: Message) -> None:
         incoming.sender_name
     )
 
-async def handle_document(message: Message, bot: Bot):
+async def media_handler(message: Message, bot: Bot) -> None:
     if message.chat.type not in ("group", "supergroup"):
         return
+    if message.media_group_id is not None:
+        await collect_album(message=message, bot=bot)
+        return
+    attachment = await media_telegram(message,bot)
+
+    incoming = IncomingMessage(
+        platform="telegram",
+        chat_id=str(message.chat.id),
+        message_id=str(message.message_id),
+        text=message.caption,
+        sender_id=(
+            str(message.from_user.id)
+            if message.from_user is not None
+            else None
+        ),
+        sender_name=(
+            message.from_user.full_name
+            if message.from_user is not None
+            else None
+        ),
+        reply_to_message_id=(
+            str(message.reply_to_message.message_id)
+            if message.reply_to_message
+            else None
+        ),
+        attachments=[attachment],
+    )
+
+    await handle_incoming_message(incoming)
+    logger.info(
+        "Received media: platform=%s, chat_id=%s, message_id=%s, file=%s",
+        incoming.platform,
+        incoming.chat_id,
+        incoming.message_id,
+        attachment.file_name
+        )
+
+async def document_telegram(message: Message, bot: Bot) -> MediaAttachment:
     document = message.document
     filepath = await download_file(document, bot)
     
@@ -84,42 +122,6 @@ async def handle_document(message: Message, bot: Bot):
     )
 
 
-
-async def photo_handler(message: Message, bot: Bot) -> None:
-    if message.chat.type not in ("group", "supergroup"):
-        return
-    if message.media_group_id is not None:
-        await collect_album(message=message, bot=bot)
-    else:
-        attachment = await photo_telegram(message=message, bot=bot)
-        incoming = IncomingMessage(
-            platform="telegram",
-            chat_id=str(message.chat.id),
-            message_id=str(message.message_id),
-            text=message.caption,
-            sender_id=(
-                str(message.from_user.id)
-                if message.from_user is not None
-                else None
-            ),
-            sender_name=(
-                str(message.from_user.full_name)
-                if message.from_user is not None
-                else None
-            ),
-            reply_to_message_id=(
-                str(message.reply_to_message.message_id) if message.reply_to_message else None
-            ),
-            attachments=[attachment]
-        )
-        await handle_incoming_message(incoming)
-        logger.info(
-        "Received photo: platform=%s, chat_id=%s, message_id=%s, file=%s",
-        incoming.platform,
-        incoming.chat_id,
-        incoming.message_id,
-        attachment.file_name
-        )
 
 async def download_file(file: str | Downloadable, bot: Bot) -> Path:
     unique_id = uuid4().hex
@@ -155,6 +157,45 @@ async def photo_telegram(message: Message, bot: Bot) -> MediaAttachment:
         mime_type=mime.mime
     )
 
+async def video_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    video = message.video
+
+    filepath = await download_file(video,bot)
+    
+    mime = guess(filepath)
+    if mime is None or not mime.mime.startswith("video/"):
+            logger.error(f"Could not determine the video format")
+            raise ValueError("Could not determine the video format")
+        
+    new_filepath = filepath.with_suffix(f".{mime.extension}")
+    filepath = filepath.rename(new_filepath)
+
+    return MediaAttachment(
+        media_type="video",
+        file_path=filepath,
+        file_name=video.file_name,
+        mime_type=mime.mime
+    )
+
+async def audio_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    audio = message.audio
+
+    filepath = await download_file(audio, bot)
+
+    mime = guess(filepath)
+    if mime is None or not mime.mime.startswith("audio/"):
+            logger.error(f"Could not determine the audio format")
+            raise ValueError("Could not determine the audio format")
+        
+    new_filepath = filepath.with_suffix(f".{mime.extension}")
+    filepath = filepath.rename(new_filepath)
+
+    return MediaAttachment(
+        media_type="audio",
+        file_path=filepath,
+        file_name=audio.file_name,
+        mime_type=mime.mime
+    )    
 
 async def collect_album(message: Message, bot: Bot):
     media_group_id = message.media_group_id
@@ -183,7 +224,7 @@ async def process_album_after_delay(keys: str, bot: Bot):
         additional_message_ids = []
         text: str | None = None
         for index, msg in enumerate(messages):
-            attachments.append(await photo_telegram(msg, bot))
+            attachments.append(await media_telegram(msg, bot))
 
             if index > 0:
                 additional_message_ids.append(str(msg.message_id))
@@ -227,6 +268,17 @@ async def process_album_after_delay(keys: str, bot: Bot):
     finally:
         if album_tasks.get(keys) is asyncio.current_task():
             album_tasks.pop(keys, None)
+
+async def media_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    if message.document is not None:
+        return await document_telegram(message=message, bot=bot)
+    elif message.photo:
+        return await photo_telegram(message=message, bot=bot)
+    elif message.video:
+        return await video_telegram(message=message, bot=bot)
+    elif message.audio:
+        return await audio_telegram(message=message, bot=bot)
+    raise  ValueError("Unsupported media type in album")
 
 async def run_telegram_bot() -> None:
     token = get_required_env("TELEGRAM_BOT_TOKEN")
@@ -273,7 +325,7 @@ async def run_telegram_bot() -> None:
         text_handler,
         F.text & ~F.text.startswith("/"),
     )
-    dispatcher.message.register(partial(photo_handler, bot=bot), F.photo)
+    dispatcher.message.register(partial(media_handler, bot=bot), F.photo | F.video| F.document | F.audio)
 
     try:
         await dispatcher.start_polling(bot)

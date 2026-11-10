@@ -8,14 +8,51 @@ from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward
-from vkbottle import PhotoMessageUploader, VKAPIError
+from vkbottle import PhotoMessageUploader, DocMessagesUploader
+from vkbottle import VKAPIError
 
+from pigeon_tg_vk.bridge.adapters.host import upload_temp_link
 from pigeon_tg_vk.bridge.config import get_required_env
-from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
+from pigeon_tg_vk.bridge.core.models import DeliveryResult, IncomingMessage, MediaAttachment
 from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
 from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logger = logging.getLogger(__name__)
+
+UNSUPPORTED_EXTENSIONS = {
+    # Исполняемые файлы
+    ".exe",
+    ".dll",
+    ".com",
+    ".scr",
+    ".msi",
+    ".jar",
+    ".apk",
+
+    # Скрипты
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".sh",
+    ".bash",
+    ".py",
+    ".js",
+    ".vbs",
+
+    #аудио файлы
+    ".mp3", 
+    # ".m4a",
+     ".wav",
+     ".flac",
+     ".ogg",
+     ".aac",
+}
+
+def is_unsupported_document(attachment: MediaAttachment) -> bool:
+    filename = attachment.file_name or attachment.file_path.name
+    extension = Path(filename).suffix.lower()
+
+    return extension in UNSUPPORTED_EXTENSIONS
 
 async def photo_vk(url: str) -> MediaAttachment:
     unique_id = uuid4().hex
@@ -59,19 +96,26 @@ async def run_vk_bot() -> None:
     bot = Bot(token=token)
 
     photo_uploader = PhotoMessageUploader(bot.api)
+    doc_uploader = DocMessagesUploader(bot.api)
 
-    async def upload_photo_with_retry(uploader, path: Path, peer_id: int) -> str:
+    async def upload_file_with_retry(uploader, path: Path,  peer_id:int, **upload_params) -> str:
         attempt = 0
         delay = 1.0
         max_delay = 30.0
         while True:
             attempt += 1
             try:
-                return await uploader.upload(file_source=str(path), peer_id=peer_id)
-            except (json.JSONDecodeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.info(
+                    "Uploading file: path=%s, exists=%s, size=%s",
+                    path,
+                    path.exists(),
+                    path.stat().st_size if path.exists() else None,
+                )
+                return await uploader.upload(file_source=str(path), peer_id=peer_id, **upload_params)
+            except (json.JSONDecodeError, aiohttp.ClientError, asyncio.TimeoutError):
                 logger.warning(
-                    "VK photo upload failed (attempt %s): file=%s, error=%r, retry in %.1fs",
-                    attempt, path.name, e, delay,
+                    "VK file upload failed (attempt %s): file=%s, retry in %.1fs",
+                    attempt, path.name, delay,
                 )
                 await asyncio.sleep(delay + 0.5)
                 delay = min(delay * 2, max_delay)
@@ -87,13 +131,17 @@ async def run_vk_bot() -> None:
             ).to_raw()
         
         media = []
+        failed_attachments = []
         logger.info(
-            "VK upload started: chat_id=%s, photos_count=%s",
+            "VK upload started: chat_id=%s, attachments_count=%s",
             chat_id,
             len(attachments),
         )
         try:
+            def add_line(current: str | None, line: str) -> str:
+                return (current + "\n" if current else "") + line
             for item in attachments:
+                filename = item.file_name or item.file_path.name
                 if item.media_type == "photo":
                     logger.info(
                         "Uploading photo: file=%s, size=%s bytes, exists=%s",
@@ -101,7 +149,24 @@ async def run_vk_bot() -> None:
                         item.file_path.stat().st_size,
                         item.file_path.exists(),
                     )
-                    media.append(await upload_photo_with_retry(photo_uploader, item.file_path, int(chat_id)))
+                    media.append(await upload_file_with_retry(photo_uploader, item.file_path, peer_id=int(chat_id)))
+                elif item.media_type == "document"  or item.media_type == "audio" or item.media_type == "video":
+                    if  not is_unsupported_document(item):
+                        try:
+                            media.append(await upload_file_with_retry(doc_uploader, item.file_path, peer_id=int(chat_id), title=filename or item.file_path.name))
+                            continue
+                        except VKAPIError:
+                            logger.warning("VK rejected file, falling back to link: file=%s", filename, exc_info=True)
+                    url = await upload_temp_link(item.file_path, filename)
+                    text = add_line(text, f"{filename}: {url}")
+
+                logger.info(
+                    "Uploading {item.media_type}: file=%s, size=%s bytes, exists=%s",
+                    item.file_path.name,
+                    item.file_path.stat().st_size,
+                    item.file_path.exists(),
+                )
+                    
             logger.info(
                 "VK upload finished: chat_id=%s, photos_count=%s",
                 chat_id,
@@ -109,8 +174,7 @@ async def run_vk_bot() -> None:
             )
         finally:
             for item in attachments:
-                if item.media_type == "photo":
-                    item.file_path.unlink(missing_ok=True)
+                item.file_path.unlink(missing_ok=True)
             attachment = ",".join(media) if media else None
             msg_id = await bot.api.messages.send(
                     peer_id=int(chat_id),
@@ -130,7 +194,14 @@ async def run_vk_bot() -> None:
             message_info.items[0].conversation_message_id,
         )
 
-        return message_info.items[0].conversation_message_id
+        conversation_message_id = (
+            message_info.items[0].conversation_message_id
+        )
+
+        return DeliveryResult(
+            message_id=conversation_message_id,
+            failed_attachments=failed_attachments,
+        )
 
     register_sender("vk", send_to_vk)
 

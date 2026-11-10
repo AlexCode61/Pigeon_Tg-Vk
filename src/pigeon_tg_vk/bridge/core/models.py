@@ -20,7 +20,11 @@ class IncomingMessage:
     reply_to_message_id: str | None = None
     additional_message_ids: list[str] = field(default_factory=list)
     attachments: list[MediaAttachment] = field(default_factory=list)
-    
+
+@dataclass
+class DeliveryResult:
+    message_id: int
+    failed_attachments: list[MediaAttachment] = field(default_factory=list)    
 
 @dataclass(frozen=True)
 class Target:
