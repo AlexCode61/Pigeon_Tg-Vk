@@ -5,7 +5,7 @@ from sqlalchemy import text
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.storage.base import Base
 
-DATABASE_URL = f"postgresql+asyncpg://{get_required_env('DATABASE_USER')}:{get_required_env('DATABASE_PASSWORD')}@{get_required_env('DATABASE_ADDRESS')}/{get_required_env('DATABASE_NAME')}"
+DATABASE_URL = f"postgresql+asyncpg://{get_required_env('POSTGRES_USER')}:{get_required_env('POSTGRES_PASSWORD')}@{get_required_env('POSTGRES_HOST')}:{get_required_env('POSTGRES_PORT')}/{get_required_env('POSTGRES_DB')}"
 
 engine = create_async_engine(
     DATABASE_URL, 
