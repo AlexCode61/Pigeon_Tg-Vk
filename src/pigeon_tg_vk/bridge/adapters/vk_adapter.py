@@ -7,9 +7,8 @@ from uuid import uuid4
 from filetype import guess
 
 from vkbottle.bot import Bot, Message
-from vkbottle_types.objects import MessagesForward
-from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUploader
-from vkbottle import VKAPIError
+from vkbottle_types.objects import MessagesForward, MessagesMessageAttachment
+from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUploader, VKAPIError
 
 from pigeon_tg_vk.bridge.adapters.host import upload_temp_link
 from pigeon_tg_vk.bridge.config import get_required_env
@@ -88,6 +87,47 @@ async def photo_vk(url: str) -> MediaAttachment:
             raise
         except OSError:
             logger.exception("File error while processing VK photo")
+            raise
+
+async def audio_vk(attachment: MessagesMessageAttachment) -> MediaAttachment:
+    audio = attachment.audio
+    project_root = Path(__file__).resolve().parents[4]
+    temp_dir = project_root / "temp"
+
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    filepath = temp_dir / (audio.artist+' - '+audio.title)
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url=audio.url) as response:
+                logger.info(
+                    "VK audio download: status=%s, content_type=%s, content_length=%s",
+                    response.status,
+                    response.headers.get("Content-Type"),
+                    response.headers.get("Content-Length"),
+                )
+                response.raise_for_status()
+                audio_data = await response.read()
+                filepath.write_bytes(audio_data)
+                
+                mime = guess(filepath)
+                
+                if mime is None or not mime.mime.startswith("audio/"):
+                    logger.error("Could not determine the audio format")
+                    raise ValueError("Could not determine the audio format")
+                new_filepath = filepath.with_suffix(f".{mime.extension}")
+                filepath.rename(new_filepath)
+                filepath = new_filepath
+                return MediaAttachment(
+                        media_type="audio",
+                        file_path=filepath,
+                        file_name=filepath.name,
+                        mime_type=mime.mime
+                    )
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP: {e}")
+            raise
+        except OSError:
+            logger.exception("File error while processing VK audio")
             raise
 
 async def run_vk_bot() -> None:
@@ -231,6 +271,8 @@ async def run_vk_bot() -> None:
         )
         
         users = await bot.api.users.get(user_ids=[message.from_id])
+
+        text = message.text or None
         attachments:list[MediaAttachment] = []
 
         for attachment in vk_message.attachments:
@@ -252,13 +294,24 @@ async def run_vk_bot() -> None:
                 )
 
                 photo = await photo_vk(largest_size.url)
-                attachments.append(photo)
-        
+                attachments.append(photo)           
+            elif attachment.type == "video":
+                warning = "Видео не может быть перенаправлено в Telegram."
+                text = f"{text}\n{warning}" if text else warning
+                forward = MessagesForward(
+                    peer_id=message.peer_id,
+                    conversation_message_ids=[message.conversation_message_id],
+                    is_reply=True
+                ).to_raw()
+                await bot.api.messages.send(peer_id=message.peer_id, message=warning, random_id=0, forward=forward)
+            elif attachment.type == "audio":
+                audio = await audio_vk(attachment)
+                attachments.append(audio)
         incoming = IncomingMessage(
             platform="vk",
             chat_id=str(message.peer_id),
             message_id=str(message.conversation_message_id),
-            text=message.text or None,
+            text=text,
             sender_id=str(message.from_id),
             reply_to_message_id=(
                 str(message.reply_message.conversation_message_id) if message.reply_message is not None and message.reply_message.conversation_message_id is not None else None),

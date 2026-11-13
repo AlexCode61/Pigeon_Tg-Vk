@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pigeon_tg_vk.bridge.core.models import IncomingMessage, Target
 from pigeon_tg_vk.bridge.config import get_required_env
 

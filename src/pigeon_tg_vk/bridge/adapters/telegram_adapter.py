@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Downloadable, Message, ReplyParameters, FSInputFile, InputMediaPhoto
+from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, ReplyParameters, FSInputFile, InputMediaPhoto
 from aiogram import F
 
 from pathlib import Path
@@ -318,6 +318,62 @@ async def run_telegram_bot() -> None:
     token = get_required_env("TELEGRAM_BOT_TOKEN")
 
     bot = Bot(token=token)
+
+    async def visual_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
+        if len(attachments) > 1:
+            media: list[MediaUnion] = []
+            for index, attachment in enumerate(attachments):
+                if attachment.media_type == "photo":
+                    media.append(InputMediaPhoto(media=FSInputFile(attachment.file_path), caption=text if index == 0 else None))
+                if attachment.media_type == "video":
+                    media.append(InputMediaVideo(media=FSInputFile(attachment.file_path), caption=text if index == 0 else None))
+            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
+            return msg[0].message_id
+        elif len(attachments) == 1:
+            item = attachments[0]
+            file = FSInputFile(
+                item.file_path,
+                filename=item.file_name or item.file_path.name
+                )
+            if item.media_type == "photo":
+                msg = await bot.send_photo(chat_id=int(chat_id), photo=file, caption=text, reply_parameters=reply)
+            elif item.media_type == "video":
+                msg = await bot.send_video(chat_id=int(chat_id), video=file, caption=text, reply_parameters=reply)
+            return msg.message_id
+
+    async def audio_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
+        if len(attachments) > 1:
+            media = [
+                    InputMediaAudio(media=FSInputFile(audio.file_path), caption=text)
+                    for audio in attachments
+                ]
+            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
+            return msg[0].message_id
+        elif len(attachments) == 1:
+            item = attachments[0]
+            file = FSInputFile(
+                item.file_path,
+                filename=item.file_name or item.file_path.name
+                )
+            msg = await bot.send_audio(chat_id=int(chat_id),audio=file,caption=text,reply_parameters=reply)
+            return msg.message_id
+        
+    async def document_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
+        if len(attachments) > 1:
+            media = [
+                    InputMediaDocument(media=FSInputFile(document.file_path), caption=text)
+                    for document in attachments
+                ]
+            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
+            return msg[0].message_id
+        elif len(attachments) == 1:
+            item = attachments[0]
+            file = FSInputFile(
+                item.file_path,
+                filename=item.file_name or item.file_path.name
+                )
+            msg = await bot.send_document(chat_id=int(chat_id), document=file, caption=text, reply_parameters=reply)
+            return msg.message_id
     
     async def send_to_telegram(chat_id: str, text: str | None, reply_to_msg_id: int | None, attachments: list[MediaAttachment]) -> int:
         reply = (
@@ -326,27 +382,32 @@ async def run_telegram_bot() -> None:
             else None
             )
 
-        photos: list[MediaAttachment] = []
-
-        for item in attachments:
-            if item.media_type == "photo":
-                photos.append(item)
+        if attachments:
+            groups = {"visual": [],
+                "audio": [],
+                "document": [],
+                "voice": []}
+            first_message_id: int | None = None
         
-        if photos:
-            if len(photos) > 1:
-                media = [
-                        InputMediaPhoto(media=FSInputFile(photo.file_path), caption=text if index == 0 else None)
-                        for index, photo in enumerate(photos)
-                    ]
-                msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
-                for photo in photos:
-                    photo.file_path.unlink(missing_ok=True)
-                return msg[0].message_id
-            else:
-                photo = FSInputFile(photos[0].file_path)
-                msg = await bot.send_photo(chat_id=int(chat_id),caption=text, reply_parameters=reply, photo=photo)
-                photos[0].file_path.unlink(missing_ok=True)
-                return msg.message_id
+            for item in attachments:
+                if item.media_type in ("photo", "video"):
+                    groups["visual"].append(item)
+                elif item.media_type in ("audio", "document"):
+                    groups[item.media_type].append(item)
+
+            for group_type, items in groups.items():
+                if not items:
+                    continue
+
+                if group_type == "visual":
+                    msg_id = await visual_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                elif group_type == "audio":
+                    msg_id = await audio_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                elif group_type == "document":
+                    msg_id = await document_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                if first_message_id is None:
+                    first_message_id = msg_id
+            return first_message_id
         else: 
             msg = await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
             return msg.message_id
