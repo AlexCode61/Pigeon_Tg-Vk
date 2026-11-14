@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, ReplyParameters, FSInputFile, InputMediaPhoto
+from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, MessageOriginUnion, ReplyParameters, FSInputFile, InputMediaPhoto
 from aiogram import F
 
 from pathlib import Path
@@ -34,25 +34,44 @@ async def start_handler(message: Message) -> None:
         message.chat.id,
     )
 
+def forward_name_message(origin: MessageOriginUnion) -> str | None:
+    if origin.type == "user":
+        return origin.sender_user.full_name
+
+    elif origin.type == "hidden_user":
+        return origin.sender_user_name
+
+    elif origin.type == "chat":
+        return origin.author_signature or origin.chat.title
+
+    elif origin.type == "channel":
+        return origin.author_signature or origin.chat.title
+    else:
+        return None
+
 async def text_handler(message: Message) -> None:
     if message.text is None or message.chat.type not in ("group", "supergroup"):
         return
-
+    if message.forward_origin:
+        forward_name = forward_name_message(message.forward_origin)
+        text = f"Пересланное сообщение {forward_name}\n{message.text}"
+    else:
+        text = message.text
     incoming = IncomingMessage(
         platform="telegram",
         chat_id=str(message.chat.id),
         message_id=str(message.message_id),
-        text=message.text,
+        text=text,
         sender_id=(
             str(message.from_user.id)
             if message.from_user is not None
             else None
         ),
-        sender_name=(
-            str(message.from_user.full_name)
+        sender_name= (
+            message.from_user.full_name
             if message.from_user is not None
             else None
-        )
+        ),
     )
 
     if message.reply_to_message:
@@ -66,23 +85,28 @@ async def text_handler(message: Message) -> None:
         incoming.chat_id,
         incoming.message_id,
         incoming.sender_id,
+        incoming.sender_name,
         incoming.text,
-        incoming.sender_name
     )
 
 async def media_handler(message: Message, bot: Bot) -> None:
     if message.chat.type not in ("group", "supergroup"):
         return
+    if message.forward_origin:
+        forward_name = forward_name_message(message.forward_origin)
+        text = f"Пересланное сообщение {forward_name}\n{message.caption}"
+    else:
+        text = message.text
+    
     if message.media_group_id is not None:
         await collect_album(message=message, bot=bot)
         return
     attachment = await media_telegram(message,bot)
-
     incoming = IncomingMessage(
         platform="telegram",
         chat_id=str(message.chat.id),
         message_id=str(message.message_id),
-        text=message.caption,
+        text=text,
         sender_id=(
             str(message.from_user.id)
             if message.from_user is not None
@@ -92,7 +116,7 @@ async def media_handler(message: Message, bot: Bot) -> None:
             message.from_user.full_name
             if message.from_user is not None
             else None
-        ),
+            ),
         reply_to_message_id=(
             str(message.reply_to_message.message_id)
             if message.reply_to_message
@@ -357,6 +381,23 @@ async def run_telegram_bot() -> None:
                 )
             msg = await bot.send_audio(chat_id=int(chat_id),audio=file,caption=text,reply_parameters=reply)
             return msg.message_id
+
+    async def voice_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
+        if len(attachments) > 1:
+            media = [
+                    InputMediaAudio(media=FSInputFile(audio.file_path), caption=text)
+                    for audio in attachments
+                ]
+            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
+            return msg[0].message_id
+        elif len(attachments) == 1:
+            item = attachments[0]
+            file = FSInputFile(
+                item.file_path,
+                filename=item.file_name or item.file_path.name
+                )
+            msg = await bot.send_voice(chat_id=int(chat_id),voice=file,caption=text,reply_parameters=reply)
+            return msg.message_id
         
     async def document_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
         if len(attachments) > 1:
@@ -376,41 +417,54 @@ async def run_telegram_bot() -> None:
             return msg.message_id
     
     async def send_to_telegram(chat_id: str, text: str | None, reply_to_msg_id: int | None, attachments: list[MediaAttachment]) -> int:
-        reply = (
-            ReplyParameters(message_id=reply_to_msg_id)
-            if reply_to_msg_id is not None
-            else None
-            )
+        try:
+            reply = (
+                ReplyParameters(message_id=reply_to_msg_id)
+                if reply_to_msg_id is not None
+                else None
+                )
 
-        if attachments:
-            groups = {"visual": [],
-                "audio": [],
-                "document": [],
-                "voice": []}
-            first_message_id: int | None = None
-        
+            if attachments:
+                groups = {"visual": [],
+                    "audio": [],
+                    "document": [],
+                    "voice": []}
+                first_message_id: int | None = None
+            
+                for item in attachments:
+                    if item.media_type in ("photo", "video"):
+                        groups["visual"].append(item)
+                    elif item.media_type in ("audio", "document", "voice"):
+                        groups[item.media_type].append(item)
+
+                for group_type, items in groups.items():
+                    if not items:
+                        continue
+
+                    if group_type == "visual":
+                        msg_id = await visual_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                    elif group_type == "audio":
+                        msg_id = await audio_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                    elif group_type == "document":
+                        msg_id = await document_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                    elif group_type == "voice":
+                        msg_id = await voice_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
+                    if first_message_id is None:
+                        first_message_id = msg_id
+                return first_message_id
+            else: 
+                msg = await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
+                return msg.message_id
+        finally:
             for item in attachments:
-                if item.media_type in ("photo", "video"):
-                    groups["visual"].append(item)
-                elif item.media_type in ("audio", "document"):
-                    groups[item.media_type].append(item)
-
-            for group_type, items in groups.items():
-                if not items:
-                    continue
-
-                if group_type == "visual":
-                    msg_id = await visual_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
-                elif group_type == "audio":
-                    msg_id = await audio_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
-                elif group_type == "document":
-                    msg_id = await document_send(chat_id=int(chat_id), text=text, reply=reply, attachments=items)
-                if first_message_id is None:
-                    first_message_id = msg_id
-            return first_message_id
-        else: 
-            msg = await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
-            return msg.message_id
+                try:
+                    item.file_path.unlink(missing_ok=True)
+                    logger.info("Temporary file deleted: %s", item.file_path)
+                except OSError:
+                    logger.exception(
+                        "Failed to delete temporary file: %s",
+                        item.file_path,
+                    )
     
     register_sender("telegram", send_to_telegram)
     dispatcher = Dispatcher()
