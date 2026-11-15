@@ -1,7 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pigeon_tg_vk.bridge.storage.models import MessageMapping
+from datetime import datetime, timedelta, UTC
 
 async def create_message_mapping(session: AsyncSession, telegram_chat_id: int, telegram_msg_id: int, vk_peer_id: int, vk_msg_id: int) -> MessageMapping:
     messageMapping = MessageMapping(
@@ -28,3 +29,12 @@ async def  get_by_vk_message(session: AsyncSession, vk_peer_id: int, vk_msg_id: 
         ).order_by(MessageMapping.id).limit(1)
     result = await session.execute(stmt)
     return result.scalars().first()
+
+async def delete_old_mappings(session: AsyncSession) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=30)
+
+    result = await session.execute(delete(MessageMapping).where(MessageMapping.created_at < cutoff))
+
+    await session.commit()
+
+    return result.rowcount
