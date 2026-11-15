@@ -10,6 +10,7 @@ __pycache__/
 .env
 .env.*
 temp/
+logs/
 uv.*
 
 # Allow the example environment file
