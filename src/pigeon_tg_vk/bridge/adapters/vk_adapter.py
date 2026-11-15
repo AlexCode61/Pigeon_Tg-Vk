@@ -15,7 +15,7 @@ from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUplo
 from pigeon_tg_vk.bridge.adapters.host import upload_temp_link
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import DeliveryResult, IncomingMessage, MediaAttachment
-from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
+from pigeon_tg_vk.bridge.core.handler import handle_incoming_message, reserve_slot, resolve_slot
 from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logger = logging.getLogger(__name__)
@@ -318,32 +318,46 @@ async def run_vk_bot() -> None:
     register_sender("vk", send_to_vk)
     @bot.on.chat_message()
     async def handle_vk_message(message: Message) -> None:
-        users = await bot.api.users.get(user_ids=[message.from_id])
-        initial_user = f"{users[0].first_name} {users[0].last_name}"
+        fwds = message.fwd_messages or []
+        slots = [reserve_slot() for _ in (fwds or [None])]
+        try:
+            users = await bot.api.users.get(user_ids=[message.from_id])
+            initial_user = f"{users[0].first_name} {users[0].last_name}"
 
-        logger.info(
-            "VK message received: peer_id=%s, conversation_message_id=%s, "
-            "from_id=%s, attachments=%s",
-            message.peer_id,
-            message.conversation_message_id,
-            message.from_id,
-            len(message.attachments),
-        )
-        history = await bot.api.messages.get_by_id(
-            peer_id=message.peer_id,
-            cmids=[message.conversation_message_id],
-        )
+            logger.info(
+                "VK message received: peer_id=%s, conversation_message_id=%s, "
+                "from_id=%s, attachments=%s",
+                message.peer_id,
+                message.conversation_message_id,
+                message.from_id,
+                len(message.attachments),
+            )
+            history = await bot.api.messages.get_by_id(
+                peer_id=message.peer_id,
+                cmids=[message.conversation_message_id],
+            )
 
-        vk_message = history.items[0]
+            vk_message = history.items[0]
 
-        logger.info(
-            "VK message attachments from API: %s",
-            len(vk_message.attachments),
-        )
-        if message.fwd_messages:
-            for forwarded in message.fwd_messages:
-                incoming = await create_message(message=forwarded, vk_message=forwarded, initial_user=initial_user)
-                
+            logger.info(
+                "VK message attachments from API: %s",
+                len(vk_message.attachments),
+            )
+            if fwds:
+                for forwarded, slot in zip(fwds, slots):
+                    incoming = await create_message(message=forwarded, vk_message=forwarded, initial_user=initial_user)
+                    
+                    logger.info(
+                        "Received VK message: chat_id=%s, message_id=%s, attachments=%s",
+                        incoming.chat_id,
+                        incoming.message_id,
+                        len(incoming.attachments),
+                    )
+                    resolve_slot(slot, incoming)
+
+            else:
+                incoming = await create_message(message=message, vk_message=vk_message)
+
                 logger.info(
                     "Received VK message: chat_id=%s, message_id=%s, attachments=%s",
                     incoming.chat_id,
@@ -351,18 +365,9 @@ async def run_vk_bot() -> None:
                     len(incoming.attachments),
                 )
 
-                await handle_incoming_message(incoming)
-        else:
-            incoming = await create_message(message=message, vk_message=vk_message)
-
-            logger.info(
-                "Received VK message: chat_id=%s, message_id=%s, attachments=%s",
-                incoming.chat_id,
-                incoming.message_id,
-                len(incoming.attachments),
-            )
-
-            await handle_incoming_message(incoming)
-        
+                resolve_slot(slots[0], incoming)
+        finally:
+            for s in slots:
+                resolve_slot(s, None)
     logger.info("Starting VK bot polling...")
     await bot.run_polling()

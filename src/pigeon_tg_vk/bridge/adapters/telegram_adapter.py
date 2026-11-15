@@ -15,14 +15,19 @@ from functools import partial
 
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
-from pigeon_tg_vk.bridge.core.handler import handle_incoming_message
+from pigeon_tg_vk.bridge.core.handler import reserve_slot, resolve_slot
 from pigeon_tg_vk.bridge.core.dispatcher import register_sender
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 media_groups: dict[str, list[Message]] = defaultdict(list)
 album_tasks: dict[str, asyncio.Task] = {}
+album_slots: dict[str, "asyncio.Future"] = {}
+
+_jobs: set[asyncio.Task] = set()
+
 
 async def start_handler(message: Message) -> None:
     await message.answer(
@@ -33,6 +38,10 @@ async def start_handler(message: Message) -> None:
         message.chat.type,
         message.chat.id,
     )
+def spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _jobs.add(task)
+    task.add_done_callback(_jobs.discard)
 
 def forward_name_message(origin: MessageOriginUnion) -> str | None:
     if origin.type == "user":
@@ -52,87 +61,100 @@ def forward_name_message(origin: MessageOriginUnion) -> str | None:
 async def text_handler(message: Message) -> None:
     if message.text is None or message.chat.type not in ("group", "supergroup"):
         return
-    if message.forward_origin:
-        forward_name = forward_name_message(message.forward_origin)
-        text = f"Пересланное сообщение {forward_name}\n{message.text}"
-    else:
-        text = message.text
-    incoming = IncomingMessage(
-        platform="telegram",
-        chat_id=str(message.chat.id),
-        message_id=str(message.message_id),
-        text=text,
-        sender_id=(
-            str(message.from_user.id)
-            if message.from_user is not None
-            else None
-        ),
-        sender_name= (
-            message.from_user.full_name
-            if message.from_user is not None
-            else None
-        ),
-    )
+    slot = reserve_slot()
+    try:
+        if message.forward_origin:
+            forward_name = forward_name_message(message.forward_origin)
+            text = f"Пересланное сообщение {forward_name}\n{message.text}"
+        else:
+            text = message.text
+        incoming = IncomingMessage(
+            platform="telegram",
+            chat_id=str(message.chat.id),
+            message_id=str(message.message_id),
+            text=text,
+            sender_id=(
+                str(message.from_user.id)
+                if message.from_user is not None
+                else None
+            ),
+            sender_name= (
+                message.from_user.full_name
+                if message.from_user is not None
+                else None
+            ),
+            reply_to_message_id=(
+                str(message.reply_to_message.message_id)
+                if message.reply_to_message
+                else None
+            )
+        )
+        resolve_slot(slot, incoming)
 
-    if message.reply_to_message:
-        incoming.reply_to_message_id = str(message.reply_to_message.message_id)    
-
-    await handle_incoming_message(incoming)
-    logger.info(
-        "Received message: platform=%s, chat_id=%s, "
-        "message_id=%s, sender_id=%s, sender_name=%s, text=%s",
-        incoming.platform,
-        incoming.chat_id,
-        incoming.message_id,
-        incoming.sender_id,
-        incoming.sender_name,
-        incoming.text,
-    )
+        logger.info(
+            "Received message: platform=%s, chat_id=%s, "
+            "message_id=%s, sender_id=%s, sender_name=%s, text=%s",
+            incoming.platform,
+            incoming.chat_id,
+            incoming.message_id,
+            incoming.sender_id,
+            incoming.sender_name,
+            incoming.text,
+        )
+    finally:
+        resolve_slot(slot, None)
 
 async def media_handler(message: Message, bot: Bot) -> None:
     if message.chat.type not in ("group", "supergroup"):
         return
-    if message.forward_origin:
-        forward_name = forward_name_message(message.forward_origin)
-        text = f"Пересланное сообщение {forward_name}\n{message.caption}"
-    else:
-        text = message.text
-    
     if message.media_group_id is not None:
         await collect_album(message=message, bot=bot)
         return
-    attachment = await media_telegram(message,bot)
-    incoming = IncomingMessage(
-        platform="telegram",
-        chat_id=str(message.chat.id),
-        message_id=str(message.message_id),
-        text=text,
-        sender_id=(
-            str(message.from_user.id)
-            if message.from_user is not None
-            else None
-        ),
-        sender_name=(
-            message.from_user.full_name
-            if message.from_user is not None
-            else None
-            ),
-        reply_to_message_id=(
-            str(message.reply_to_message.message_id)
-            if message.reply_to_message
-            else None
-        ),
-        attachments=[attachment],
-    )
+    slot = reserve_slot()
+    spawn(media_job(message=message, bot=bot, slot=slot))
 
-    await handle_incoming_message(incoming)
-    logger.info(
-        "Received media: platform=%s, chat_id=%s, message_id=%s, file=%s",
-        incoming.platform,
-        incoming.chat_id,
-        incoming.message_id,
-        attachment.file_name
+async def media_job(message: Message, bot: Bot, slot) -> None:
+    try:
+        if message.forward_origin:
+            forward_name = forward_name_message(message.forward_origin)
+            text = f"Пересланное сообщение {forward_name}\n{message.caption}"
+        else:
+            text = message.text
+
+        attachment = await media_telegram(message,bot)
+        incoming = IncomingMessage(
+            platform="telegram",
+            chat_id=str(message.chat.id),
+            message_id=str(message.message_id),
+            text=text,
+            sender_id=(
+                str(message.from_user.id)
+                if message.from_user is not None
+                else None
+            ),
+            sender_name=(
+                message.from_user.full_name
+                if message.from_user is not None
+                else None
+                ),
+            reply_to_message_id=(
+                str(message.reply_to_message.message_id)
+                if message.reply_to_message
+                else None
+            ),
+            attachments=[attachment],
         )
+
+        logger.info(
+            "Received media: platform=%s, chat_id=%s, message_id=%s, file=%s",
+            incoming.platform,
+            incoming.chat_id,
+            incoming.message_id,
+            attachment.file_name
+            )
+        resolve_slot(slot, incoming)
+    finally:
+        resolve_slot(slot, None)
 
 async def document_telegram(message: Message, bot: Bot) -> MediaAttachment:
     document = message.document
@@ -257,7 +279,10 @@ async def collect_album(message: Message, bot: Bot):
     if media_group_id is None:
         return
 
-    media_groups.setdefault(media_group_id, []).append(message)
+    if media_group_id not in album_slots:
+        album_slots[media_group_id] = reserve_slot() 
+
+    media_groups[media_group_id].append(message)
 
     task = album_tasks.get(media_group_id)
     if task is not None:
@@ -265,10 +290,14 @@ async def collect_album(message: Message, bot: Bot):
 
     album_tasks[media_group_id] = asyncio.create_task(process_album_after_delay(media_group_id, bot))
 
-async def process_album_after_delay(keys: str, bot: Bot):
+async def process_album_after_delay(key: str, bot: Bot):
+    await asyncio.sleep(0.8)
+
+    album_tasks.pop(key, None)
+    messages = media_groups.pop(key, [])
+    slot = album_slots.pop(key)
     try:
-        await asyncio.sleep(0.8)
-        messages = media_groups.pop(keys, [])
+
         if not messages:
             return
 
@@ -307,21 +336,22 @@ async def process_album_after_delay(keys: str, bot: Bot):
                 additional_message_ids=additional_message_ids,
                 attachments=attachments
             )
-        await handle_incoming_message(incoming)
         logger.info(
             "Received photos: platform=%s, chat_id=%s, message_id=%s, media_group_id=%s, photos_count=%s",
             incoming.platform,
             incoming.chat_id,
             incoming.message_id,
-            keys,
+            key,
             len(attachments)
             )
+        resolve_slot(slot, incoming)
 
     except asyncio.CancelledError:
         raise
     finally:
-        if album_tasks.get(keys) is asyncio.current_task():
-            album_tasks.pop(keys, None)
+        if album_tasks.get(key) is asyncio.current_task():
+            album_tasks.pop(key, None)
+        resolve_slot(slot, None)
 
 async def media_telegram(message: Message, bot: Bot) -> MediaAttachment:
     if message.document is not None:
@@ -477,6 +507,6 @@ async def run_telegram_bot() -> None:
     dispatcher.message.register(partial(media_handler, bot=bot), F.photo | F.video| F.document | F.audio | F.voice | F.video_note)
 
     try:
-        await dispatcher.start_polling(bot)
+        await dispatcher.start_polling(bot, handle_as_tasks=False)
     finally:
         await bot.session.close()
