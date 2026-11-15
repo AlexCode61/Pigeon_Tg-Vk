@@ -69,7 +69,7 @@ For local launch:
 Clone the repository:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Pigeon.git
+git clone https://github.com/AlexCode61/Pigeon_Tg-Vk.git
 cd Pigeon
 ```
 
