@@ -28,16 +28,28 @@ album_slots: dict[str, "asyncio.Future"] = {}
 
 _jobs: set[asyncio.Task] = set()
 
-
 async def start_handler(message: Message) -> None:
     await message.answer(
-        "Лона самая прекрасная девушка в мире"
+        f"id данного чата: {message.chat.id}"
     )
     logger.info(
         "Start message: chat_type=%s, chat_id=%s",
         message.chat.type,
         message.chat.id,
     )
+
+def should_ignore_message(message: Message) -> bool:
+    user = message.from_user
+
+    if user is None:
+        return False
+
+    return (
+        user.is_bot
+        and user.username is not None
+        and user.username.lower() in "smartspeech_sber_bot"
+    )
+
 def spawn(coro) -> None:
     task = asyncio.create_task(coro)
     _jobs.add(task)
@@ -59,6 +71,16 @@ def forward_name_message(origin: MessageOriginUnion) -> str | None:
         return None
 
 async def text_handler(message: Message) -> None:
+    if should_ignore_message(message):
+        logger.info("Ignored message from bot: @%s", message.from_user.username)
+        return
+    
+    logger.info(
+        "Text handler triggered: chat_id=%s, message_id=%s, text=%s",
+        message.chat.id,
+        message.message_id,
+        message.text,
+    )
     if message.text is None or message.chat.type not in ("group", "supergroup"):
         return
     slot = reserve_slot()
@@ -105,6 +127,9 @@ async def text_handler(message: Message) -> None:
         resolve_slot(slot, None)
 
 async def media_handler(message: Message, bot: Bot) -> None:
+    if should_ignore_message(message):
+        logger.info("Ignored message from bot: @%s", message.from_user.username)
+        return
     if message.chat.type not in ("group", "supergroup"):
         return
     if message.media_group_id is not None:

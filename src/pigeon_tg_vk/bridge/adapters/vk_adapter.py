@@ -1,21 +1,26 @@
 import logging
 import mimetypes
+import ssl
 import aiohttp
 import asyncio
 import json
 import re
+import ssl
+import certifi
+
+from aiohttp import TCPConnector
 from pathlib import Path
 from uuid import uuid4
 from filetype import guess
 
 from vkbottle.bot import Bot, Message
 from vkbottle_types.objects import MessagesForward, MessagesMessage, MessagesMessageAttachment
-from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUploader, VKAPIError
+from vkbottle import PhotoMessageUploader, DocMessagesUploader, VoiceMessageUploader, VKAPIError, API, AiohttpClient
 
 from pigeon_tg_vk.bridge.adapters.host import upload_temp_link
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import DeliveryResult, IncomingMessage, MediaAttachment
-from pigeon_tg_vk.bridge.core.handler import handle_incoming_message, reserve_slot, resolve_slot
+from pigeon_tg_vk.bridge.core.handler import reserve_slot, resolve_slot
 from pigeon_tg_vk.bridge.core.dispatcher import register_sender
 
 logger = logging.getLogger(__name__)
@@ -132,7 +137,20 @@ async def voice_vk(attachment: MessagesMessageAttachment, session: aiohttp.Clien
 async def run_vk_bot() -> None:
     token = get_required_env("VK_GROUP_TOKEN")
 
-    bot = Bot(token=token)
+    ssl_context = ssl.create_default_context(
+        cafile=certifi.where()
+    )
+
+    http_client = AiohttpClient(
+        connector=TCPConnector(ssl=ssl_context)
+    )
+
+    api = API(
+        token=token,
+        http_client=http_client,
+    )
+
+    bot = Bot(api=api)
 
     photo_uploader = PhotoMessageUploader(bot.api)
     doc_uploader = DocMessagesUploader(bot.api)
@@ -223,26 +241,20 @@ async def run_vk_bot() -> None:
             for item in attachments:
                 item.file_path.unlink(missing_ok=True)
             attachment = ",".join(media) if media else None
-            msg_id = await bot.api.messages.send(
-                    peer_id=int(chat_id),
-                    message=text,
-                    random_id=0,
-                    forward=forward,
-                    attachment=attachment
-                )
-            
-        message_info = await bot.api.messages.get_by_id(
-            message_ids=[msg_id],
-        )
+            resp = await bot.api.messages.send(
+                peer_ids=[int(chat_id)],   # peer_ids, а не peer_id
+                message=text,
+                random_id=0,
+                forward=forward,
+                attachment=attachment,
+            )
+
+        conversation_message_id = resp[0].conversation_message_id
 
         logger.info(
-            "VK sent message IDs: id=%s, conversation_message_id=%s",
-            msg_id,
-            message_info.items[0].conversation_message_id,
-        )
-
-        conversation_message_id = (
-            message_info.items[0].conversation_message_id
+            "VK sent: message_id=%s, conversation_message_id=%s",
+            resp[0].message_id,
+            conversation_message_id,
         )
 
         return DeliveryResult(
@@ -313,7 +325,14 @@ async def run_vk_bot() -> None:
                     ),
                     attachments=attachments
                 )
-        
+
+    @bot.on.chat_message(text="/peerid")
+    async def get_peer_id(message: Message):
+        await bot.api.messages.send(
+            peer_id=message.peer_id,
+            message=f"ID этой беседы: {message.peer_id}",
+            random_id=0,
+        )
 
     register_sender("vk", send_to_vk)
     @bot.on.chat_message()
