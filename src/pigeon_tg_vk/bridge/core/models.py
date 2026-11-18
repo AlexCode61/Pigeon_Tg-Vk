@@ -4,7 +4,7 @@ from typing import Literal
 
 @dataclass
 class MediaAttachment:
-    media_type: Literal["photo", "video", "voice", "document", "audio"]
+    media_type: Literal["photo", "video", "voice", "document", "audio", "sticker"]
     file_path: Path
     file_name: str | None = None
     mime_type: str | None = None

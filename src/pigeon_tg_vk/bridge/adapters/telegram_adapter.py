@@ -398,6 +398,9 @@ async def run_telegram_bot() -> None:
 
     bot = Bot(token=token)
 
+    #async def image_to_stiker():
+
+
     async def visual_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
         if len(attachments) > 1:
             media: list[MediaUnion] = []
@@ -418,6 +421,9 @@ async def run_telegram_bot() -> None:
                 msg = await bot.send_photo(chat_id=int(chat_id), photo=file, caption=text, reply_parameters=reply)
             elif item.media_type == "video":
                 msg = await bot.send_video(chat_id=int(chat_id), video=file, caption=text, reply_parameters=reply)
+            elif item.media_type == "sticker":
+                await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
+                msg = await bot.send_sticker(chat_id=int(chat_id), sticker=file ,reply_parameters=reply)
             return msg.message_id
 
     async def audio_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
@@ -438,22 +444,14 @@ async def run_telegram_bot() -> None:
             return msg.message_id
 
     async def voice_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
-        if len(attachments) > 1:
-            media = [
-                    InputMediaAudio(media=FSInputFile(audio.file_path), caption=text)
-                    for audio in attachments
-                ]
-            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
-            return msg[0].message_id
-        elif len(attachments) == 1:
-            item = attachments[0]
-            file = FSInputFile(
-                item.file_path,
-                filename=item.file_name or item.file_path.name
-                )
-            msg = await bot.send_voice(chat_id=int(chat_id),voice=file,caption=text,reply_parameters=reply)
-            return msg.message_id
-        
+        item = attachments[0]
+        file = FSInputFile(
+            item.file_path,
+            filename=item.file_name or item.file_path.name
+            )
+        msg = await bot.send_voice(chat_id=int(chat_id),voice=file,caption=text,reply_parameters=reply)
+        return msg.message_id
+    
     async def document_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
         if len(attachments) > 1:
             media = [
@@ -487,7 +485,7 @@ async def run_telegram_bot() -> None:
                 first_message_id: int | None = None
             
                 for item in attachments:
-                    if item.media_type in ("photo", "video"):
+                    if item.media_type in ("photo", "video", "sticker"):
                         groups["visual"].append(item)
                     elif item.media_type in ("audio", "document", "voice"):
                         groups[item.media_type].append(item)
