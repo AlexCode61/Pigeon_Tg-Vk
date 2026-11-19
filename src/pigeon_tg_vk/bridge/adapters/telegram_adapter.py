@@ -5,10 +5,9 @@ from collections import defaultdict
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Animation, Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, MessageOriginUnion, ReplyParameters, FSInputFile, InputMediaPhoto, Sticker
+from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, MessageOriginUnion, ReplyParameters, FSInputFile, InputMediaPhoto, Sticker
 from aiogram import F
 
-from pylottie_convert import Animation 
 from pathlib import Path
 from uuid import uuid4
 from filetype import guess
