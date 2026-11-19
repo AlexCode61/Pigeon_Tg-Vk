@@ -177,7 +177,7 @@ async def run_vk_bot() -> None:
 
     bot = Bot(api=api)
 
-    photo_uploader = PhotoMessageUploader(bot.api)
+    image_uploader = PhotoMessageUploader(bot.api)
     doc_uploader = DocMessagesUploader(bot.api)
     voice_uploader = VoiceMessageUploader(bot.api)
 
@@ -230,7 +230,7 @@ async def run_vk_bot() -> None:
                             item.file_path.stat().st_size,
                             item.file_path.exists(),
                         )
-                        media.append(await upload_file_with_retry(photo_uploader, item.file_path, peer_id=int(chat_id)))
+                        media.append(await upload_file_with_retry(image_uploader, item.file_path, peer_id=int(chat_id)))
                     elif item.media_type == "document"  or item.media_type == "audio" or item.media_type == "video":
                         if  not is_unsupported_document(item):
                             try:
@@ -242,7 +242,8 @@ async def run_vk_bot() -> None:
                         text = add_line(text, f"{filename}: {url}")
                     elif item.media_type == "voice":
                         media.append(await upload_file_with_retry(voice_uploader, item.file_path, peer_id=int(chat_id), title=filename or item.file_path.name))
-
+                    elif item.media_type == "sticker":
+                        media.append(await upload_file_with_retry(image_uploader, item.file_path, peer_id=int(chat_id)))
                     logger.info(
                         "Uploading {item.media_type}: file=%s, size=%s bytes, exists=%s",
                         item.file_path.name,

@@ -18,6 +18,9 @@ dependencies = [
     "asyncpg",
     "python-dotenv",
     "alembic",
+    "rlottie-python",
+    "imageio-ffmpeg",
+    "pillow",
     "filetype>=1.2.0",
     "aiohttp>=3.14.5",
 ]
