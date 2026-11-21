@@ -5,13 +5,16 @@ from collections import defaultdict
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, MessageOriginUnion, ReplyParameters, FSInputFile, InputMediaPhoto
+from aiogram.types import Downloadable, InputMediaAudio, InputMediaDocument, InputMediaVideo, MediaUnion, Message, MessageOriginUnion, ReplyParameters, FSInputFile, InputMediaPhoto, Sticker
 from aiogram import F
 
 from pathlib import Path
 from uuid import uuid4
 from filetype import guess
 from functools import partial
+
+import imageio_ffmpeg
+from rlottie_python.rlottie_wrapper import LottieAnimation
 
 from pigeon_tg_vk.bridge.config import get_required_env
 from pigeon_tg_vk.bridge.core.models import IncomingMessage, MediaAttachment
@@ -25,6 +28,7 @@ logger = logging.getLogger(__name__)
 media_groups: dict[str, list[Message]] = defaultdict(list)
 album_tasks: dict[str, asyncio.Task] = {}
 album_slots: dict[str, "asyncio.Future"] = {}
+FFMPEG_TIMEOUT = 60
 
 _jobs: set[asyncio.Task] = set()
 
@@ -248,6 +252,20 @@ async def video_telegram(message: Message, bot: Bot) -> MediaAttachment:
         mime_type=mime.mime
     )
 
+async def animation_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    animation = message.animation
+
+    downloaded = await download_file(animation, bot)
+    filepath = downloaded.rename(downloaded.with_suffix(".mp4"))
+    gif_path = await file_to_gif(filepath,fps=15)
+
+    return MediaAttachment(
+        media_type="video",
+        file_path=gif_path,
+        file_name=animation.file_name,
+        mime_type="video/.gif"
+    )
+
 async def audio_telegram(message: Message, bot: Bot) -> MediaAttachment:
     audio = message.audio
 
@@ -296,6 +314,87 @@ async def videonote_telegram(message: Message, bot: Bot) -> MediaAttachment:
         file_path=filepath,
         file_name=filepath.name,
         mime_type="video/mp4"
+    )
+
+async def file_to_gif(source: Path, delete_source: bool = True, fps: float = FFMPEG_TIMEOUT) -> Path:
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    destination = source.with_suffix(".gif")
+
+    filter_complex = (
+        f"[0:v]fps={fps},"
+        "scale=320:-1:flags=lanczos,"
+        "format=rgba,split[a][b];"
+        "[a]palettegen=reserve_transparent=1[p];"
+        "[b][p]paletteuse=alpha_threshold=128"
+    )
+    
+    process = None
+    success = False
+    try:
+        process = await asyncio.create_subprocess_exec(ffmpeg, "-y", "-i", str(source), "-filter_complex", filter_complex, "-loop", "0", str(destination), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise ValueError(stderr.decode(errors="replace"))
+        
+        success = True
+        return destination
+    except Exception:
+        logger.exception("Failed to convert %s to gif", source)
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        if not success:
+            destination.unlink(missing_ok=True)
+        if delete_source:
+            source.unlink(missing_ok=True)
+
+def tgs_to_gif(source: Path, delete_source: bool = True) -> Path:
+    destination = source.with_suffix(".gif")
+    try:
+        with LottieAnimation.from_tgs(str(source)) as animation:
+            animation.save_animation(str(destination), fps=15)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        if delete_source:
+            source.unlink(missing_ok=True)
+    return destination
+
+def sticker_suffix(sticker: Sticker) -> str:
+    if sticker.is_animated:
+        return ".tgs"
+    if sticker.is_video:
+        return ".webm"
+    return ".webp"
+
+async def sticker_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    sticker = message.sticker
+
+    downloaded = await download_file(sticker, bot)
+    filepath = downloaded.rename(downloaded.with_suffix(sticker_suffix(sticker)))
+                                 
+    if sticker.is_video:
+        gif_path = await file_to_gif(source=filepath)
+    elif sticker.is_animated:
+        gif_path = await asyncio.to_thread(tgs_to_gif, filepath)
+    else:
+        return MediaAttachment(
+            media_type="photo",
+            file_path=filepath,
+            file_name=filepath.name,
+            mime_type="image/webp",
+        )
+
+    return MediaAttachment(
+        media_type="document",
+        file_path=gif_path,
+        file_name=gif_path.name,
+        mime_type="image/gif",
     )
 
 async def collect_album(message: Message, bot: Bot):
@@ -379,18 +478,22 @@ async def process_album_after_delay(key: str, bot: Bot):
         resolve_slot(slot, None)
 
 async def media_telegram(message: Message, bot: Bot) -> MediaAttachment:
-    if message.document is not None:
-        return await document_telegram(message=message, bot=bot)
-    elif message.photo:
+    if  message.photo:
         return await photo_telegram(message=message, bot=bot)
+    elif message.animation:
+        return await animation_telegram(message=message, bot=bot)
     elif message.video:
         return await video_telegram(message=message, bot=bot)
     elif message.audio:
         return await audio_telegram(message=message, bot=bot)
+    elif message.document is not None:
+        return await document_telegram(message=message, bot=bot)
     elif message.voice:
         return await voice_telegram(message=message, bot=bot)
     elif message.video_note:
         return await videonote_telegram(message=message, bot=bot)
+    elif message.sticker:
+        return await sticker_telegram(message=message, bot=bot)
     raise  ValueError("Unsupported media type in album")
 
 async def run_telegram_bot() -> None:
@@ -418,6 +521,9 @@ async def run_telegram_bot() -> None:
                 msg = await bot.send_photo(chat_id=int(chat_id), photo=file, caption=text, reply_parameters=reply)
             elif item.media_type == "video":
                 msg = await bot.send_video(chat_id=int(chat_id), video=file, caption=text, reply_parameters=reply)
+            elif item.media_type == "sticker":
+                await bot.send_message(chat_id=int(chat_id), text=text, reply_parameters=reply)
+                msg = await bot.send_sticker(chat_id=int(chat_id), sticker=file ,reply_parameters=reply)
             return msg.message_id
 
     async def audio_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
@@ -438,22 +544,14 @@ async def run_telegram_bot() -> None:
             return msg.message_id
 
     async def voice_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
-        if len(attachments) > 1:
-            media = [
-                    InputMediaAudio(media=FSInputFile(audio.file_path), caption=text)
-                    for audio in attachments
-                ]
-            msg = await bot.send_media_group(chat_id=int(chat_id), media=media, reply_parameters=reply)
-            return msg[0].message_id
-        elif len(attachments) == 1:
-            item = attachments[0]
-            file = FSInputFile(
-                item.file_path,
-                filename=item.file_name or item.file_path.name
-                )
-            msg = await bot.send_voice(chat_id=int(chat_id),voice=file,caption=text,reply_parameters=reply)
-            return msg.message_id
-        
+        item = attachments[0]
+        file = FSInputFile(
+            item.file_path,
+            filename=item.file_name or item.file_path.name
+            )
+        msg = await bot.send_voice(chat_id=int(chat_id),voice=file,caption=text,reply_parameters=reply)
+        return msg.message_id
+    
     async def document_send(chat_id: str, text: str | None, reply: ReplyParameters | None, attachments: list[MediaAttachment]) -> int:
         if len(attachments) > 1:
             media = [
@@ -487,7 +585,7 @@ async def run_telegram_bot() -> None:
                 first_message_id: int | None = None
             
                 for item in attachments:
-                    if item.media_type in ("photo", "video"):
+                    if item.media_type in ("photo", "video", "sticker"):
                         groups["visual"].append(item)
                     elif item.media_type in ("audio", "document", "voice"):
                         groups[item.media_type].append(item)
@@ -529,7 +627,17 @@ async def run_telegram_bot() -> None:
         text_handler,
         F.text & ~F.text.startswith("/"),
     )
-    dispatcher.message.register(partial(media_handler, bot=bot), F.photo | F.video| F.document | F.audio | F.voice | F.video_note)
+    dispatcher.message.register(partial(media_handler, bot=bot), 
+                                F.photo | 
+                                F.video| 
+                                F.document | 
+                                F.audio | 
+                                F.voice | 
+                                F.video_note |
+                                F.animation |
+                                F.sticker
+                                
+                                )
 
     try:
         await dispatcher.start_polling(bot, handle_as_tasks=False)

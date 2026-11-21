@@ -1,6 +1,8 @@
+import gzip
 import logging
 import mimetypes
 import ssl
+from typing import Literal
 import aiohttp
 import asyncio
 import json
@@ -114,6 +116,13 @@ async def download_media(url: str, *, media_type: str, mime_prefix: str | None, 
     except (OSError, ValueError):
         logger.exception("Error while processing VK %s", media_type)
         raise
+    except aiohttp.ClientResponseError as err:
+        if err.status == 404:
+            logger.exception("Don't found page:", err.request_info.url)
+        elif err.status == 403:
+            logger.exception("Access denied (403):", err.message)
+        else:
+            raise
     finally:
         tmp_path.unlink(missing_ok=True)
         if own_session:
@@ -133,6 +142,22 @@ async def doc_vk(attachment: MessagesMessageAttachment, session: aiohttp.ClientS
 async def voice_vk(attachment: MessagesMessageAttachment, session: aiohttp.ClientSession | None = None) -> MediaAttachment:
     voice = attachment.audio_message
     return await download_media(voice.link_ogg or voice.link_mp3, media_type="voice", mime_prefix="audio/", session=session)
+async def sticker_vk(url: str, sticker_type: Literal["static", "dynamic"], session: aiohttp.ClientSession | None = None) -> MediaAttachment:
+    if sticker_type == "static":
+        return await download_media(url=url, media_type="sticker", mime_prefix="image/", session=session)
+    else:
+        media_attachment = await download_media(url=url, media_type="sticker", mime_prefix=None, session=session)
+        file = media_attachment.file_path
+        new_file = file.with_suffix(".tgs")
+        with file.open("rb") as input_file:
+            with gzip.open(new_file, "wb", compresslevel=9) as output_file:
+                output_file.write(input_file.read())
+        logger.info("Create sticker with format .tgs")
+        media_attachment.file_path = new_file
+        media_attachment.file_name = new_file.name
+        media_attachment.mime_type = "application/"
+        return media_attachment
+
 
 async def run_vk_bot() -> None:
     token = get_required_env("VK_GROUP_TOKEN")
@@ -152,13 +177,13 @@ async def run_vk_bot() -> None:
 
     bot = Bot(api=api)
 
-    photo_uploader = PhotoMessageUploader(bot.api)
+    image_uploader = PhotoMessageUploader(bot.api)
     doc_uploader = DocMessagesUploader(bot.api)
     voice_uploader = VoiceMessageUploader(bot.api)
 
     async def upload_file_with_retry(uploader, path: Path,  peer_id:int, **upload_params) -> str:
         delay = 1.0
-        for attempt in range(1, 11):
+        for attempt in range(1, 51):
             try:
                 logger.info(
                     "Uploading file: path=%s, exists=%s, size=%s",
@@ -205,7 +230,7 @@ async def run_vk_bot() -> None:
                             item.file_path.stat().st_size,
                             item.file_path.exists(),
                         )
-                        media.append(await upload_file_with_retry(photo_uploader, item.file_path, peer_id=int(chat_id)))
+                        media.append(await upload_file_with_retry(image_uploader, item.file_path, peer_id=int(chat_id)))
                     elif item.media_type == "document"  or item.media_type == "audio" or item.media_type == "video":
                         if  not is_unsupported_document(item):
                             try:
@@ -217,7 +242,8 @@ async def run_vk_bot() -> None:
                         text = add_line(text, f"{filename}: {url}")
                     elif item.media_type == "voice":
                         media.append(await upload_file_with_retry(voice_uploader, item.file_path, peer_id=int(chat_id), title=filename or item.file_path.name))
-
+                    elif item.media_type == "sticker":
+                        media.append(await upload_file_with_retry(image_uploader, item.file_path, peer_id=int(chat_id)))
                     logger.info(
                         "Uploading {item.media_type}: file=%s, size=%s bytes, exists=%s",
                         item.file_path.name,
@@ -263,68 +289,81 @@ async def run_vk_bot() -> None:
         )
 
     async def create_message(message: Message, vk_message: MessagesMessage, initial_user: str | None = None) -> IncomingMessage:
-        
-                users = await bot.api.users.get(user_ids=[message.from_id])
-                sender_name = f"{users[0].first_name} {users[0].last_name}"
-                if initial_user:
-                    text = f"Пересланное сообщение {sender_name} \n {message.text or ''}"
-                else:
-                    text = message.text or None
-                attachments:list[MediaAttachment] = []
-                async with aiohttp.ClientSession() as session:
-                    for attachment in vk_message.attachments:
-                        logger.info("Attachment type: %s", attachment.type)
-        
-                        if attachment.type == "photo":
-                            sizes = attachment.photo.sizes
-        
-                            largest_size = max(
-                                sizes,
-                                key=lambda size: size.width * size.height,
-                            )
-        
-                            logger.info(
-                                "Selected photo size: %sx%s, type=%s",
-                                largest_size.width,
-                                largest_size.height,
-                                largest_size.type,
-                            )
-        
-                            photo = await photo_vk(largest_size.url, session)
-                            attachments.append(photo)           
-                        elif attachment.type == "video":
-                            warning = "Видео не может быть перенаправлено в Telegram."
-                            text = f"{text}\n{warning}" if text else warning
-                            forward = MessagesForward(
-                                peer_id=message.peer_id,
-                                conversation_message_ids=[message.conversation_message_id],
-                                is_reply=True
-                            ).to_raw()
-                            await bot.api.messages.send(peer_id=message.peer_id, message=warning, random_id=0, forward=forward)
-                        elif attachment.type == "audio":
-                            audio = await audio_vk(attachment, session)
-                            attachments.append(audio)
-                        elif attachment.type == "voice" or attachment.type == "audio_message":
-                            voice = await voice_vk(attachment, session)
-                            attachments.append(voice)
-                        elif attachment.type == "doc":
-                            document = await doc_vk(attachment, session)
-                            attachments.append(document)
-                return IncomingMessage(
-                    platform="vk",
-                    chat_id=str(message.peer_id),
-                    message_id=str(message.conversation_message_id),
-                    text=text,
-                    sender_id=str(message.from_id),
-                    reply_to_message_id=(
-                        str(message.reply_message.conversation_message_id) if message.reply_message is not None and message.reply_message.conversation_message_id is not None else None),
-                    sender_name=(
-                            initial_user
-                            if initial_user is not None
-                            else sender_name
-                    ),
-                    attachments=attachments
-                )
+        users = await bot.api.users.get(user_ids=[message.from_id])
+        sender_name = f"{users[0].first_name} {users[0].last_name}"
+        if initial_user:
+            text = f"Пересланное сообщение {sender_name} \n {message.text or ''}"
+        else:
+            text = message.text or None
+        attachments:list[MediaAttachment] = []
+        async with aiohttp.ClientSession() as session:
+            for attachment in vk_message.attachments:
+                logger.info("Attachment type: %s", attachment.type)
+
+                if attachment.type == "photo":
+                    sizes = attachment.photo.sizes
+
+                    largest_size = max(
+                        sizes,
+                        key=lambda size: size.width * size.height,
+                    )
+
+                    logger.info(
+                        "Selected photo size: %sx%s, type=%s",
+                        largest_size.width,
+                        largest_size.height,
+                        largest_size.type,
+                    )
+
+                    photo = await photo_vk(largest_size.url, session)
+                    attachments.append(photo)           
+                elif attachment.type == "video":
+                    warning = "Видео не может быть перенаправлено в Telegram."
+                    text = f"{text}\n{warning}" if text else warning
+                    forward = MessagesForward(
+                        peer_id=message.peer_id,
+                        conversation_message_ids=[message.conversation_message_id],
+                        is_reply=True
+                    ).to_raw()
+                    await bot.api.messages.send(peer_id=message.peer_id, message=warning, random_id=0, forward=forward)
+                elif attachment.type == "audio":
+                    audio = await audio_vk(attachment, session)
+                    attachments.append(audio)
+                elif attachment.type == "voice" or attachment.type == "audio_message":
+                    voice = await voice_vk(attachment, session)
+                    attachments.append(voice)
+                elif attachment.type == "doc":
+                    document = await doc_vk(attachment, session)
+                    attachments.append(document)
+                elif attachment.type == "sticker":
+                    img = attachment.sticker.images
+                    img_background = attachment.sticker.images_with_background
+                    animation_url = attachment.sticker.animation_url
+                    if animation_url:
+                        sticker = await sticker_vk(url=animation_url, sticker_type="dynamic", session=session)
+                    elif img or img_background:
+                        largest_size = max(img or img_background, key=lambda size: size.width * size.height)
+                        sticker = await sticker_vk(url=largest_size.url, sticker_type="static", session=session)
+                    else:
+                        url = f"https://vk.ru/sticker/1-{attachment.sticker.sticker_id}-512"
+                        sticker = await sticker_vk(url=url, sticker_type="static", session=session)
+                    attachments.append(sticker)
+            
+        return IncomingMessage(
+            platform="vk",
+            chat_id=str(message.peer_id),
+            message_id=str(message.conversation_message_id),
+            text=text,
+            sender_id=str(message.from_id),
+            reply_to_message_id=(
+                str(message.reply_message.conversation_message_id) if message.reply_message is not None and message.reply_message.conversation_message_id is not None else None),
+            sender_name=(
+                    initial_user
+                    if initial_user is not None
+                    else sender_name
+            ),
+            attachments=attachments
+        )
 
     @bot.on.chat_message(text="/peerid")
     async def get_peer_id(message: Message):
