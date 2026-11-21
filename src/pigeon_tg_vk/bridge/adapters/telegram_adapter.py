@@ -252,6 +252,20 @@ async def video_telegram(message: Message, bot: Bot) -> MediaAttachment:
         mime_type=mime.mime
     )
 
+async def animation_telegram(message: Message, bot: Bot) -> MediaAttachment:
+    animation = message.animation
+
+    downloaded = await download_file(animation, bot)
+    filepath = downloaded.rename(downloaded.with_suffix(".mp4"))
+    gif_path = await file_to_gif(filepath,fps=15)
+
+    return MediaAttachment(
+        media_type="video",
+        file_path=gif_path,
+        file_name=animation.file_name,
+        mime_type="video/.gif"
+    )
+
 async def audio_telegram(message: Message, bot: Bot) -> MediaAttachment:
     audio = message.audio
 
@@ -302,7 +316,7 @@ async def videonote_telegram(message: Message, bot: Bot) -> MediaAttachment:
         mime_type="video/mp4"
     )
 
-async def webm_to_gif(source: Path, delete_source: bool = True, fps: float = FFMPEG_TIMEOUT) -> Path:
+async def file_to_gif(source: Path, delete_source: bool = True, fps: float = FFMPEG_TIMEOUT) -> Path:
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     destination = source.with_suffix(".gif")
 
@@ -365,7 +379,7 @@ async def sticker_telegram(message: Message, bot: Bot) -> MediaAttachment:
     filepath = downloaded.rename(downloaded.with_suffix(sticker_suffix(sticker)))
                                  
     if sticker.is_video:
-        gif_path = await webm_to_gif(source=filepath)
+        gif_path = await file_to_gif(source=filepath)
     elif sticker.is_animated:
         gif_path = await asyncio.to_thread(tgs_to_gif, filepath)
     else:
@@ -464,14 +478,16 @@ async def process_album_after_delay(key: str, bot: Bot):
         resolve_slot(slot, None)
 
 async def media_telegram(message: Message, bot: Bot) -> MediaAttachment:
-    if message.document is not None:
-        return await document_telegram(message=message, bot=bot)
-    elif message.photo:
+    if  message.photo:
         return await photo_telegram(message=message, bot=bot)
+    elif message.animation:
+        return await animation_telegram(message=message, bot=bot)
     elif message.video:
         return await video_telegram(message=message, bot=bot)
     elif message.audio:
         return await audio_telegram(message=message, bot=bot)
+    elif message.document is not None:
+        return await document_telegram(message=message, bot=bot)
     elif message.voice:
         return await voice_telegram(message=message, bot=bot)
     elif message.video_note:
@@ -618,7 +634,9 @@ async def run_telegram_bot() -> None:
                                 F.audio | 
                                 F.voice | 
                                 F.video_note |
+                                F.animation |
                                 F.sticker
+                                
                                 )
 
     try:
