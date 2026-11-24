@@ -14,10 +14,6 @@ engine = create_async_engine(
 
 async_session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-async def create_database_tables() -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-
 async def check_database_connection():
     async with engine.connect() as connection:
         result = await connection.execute(text("Select 1"))
