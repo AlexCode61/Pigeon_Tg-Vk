@@ -20,12 +20,11 @@ def resolve_slot(slot: Slot, message: IncomingMessage | None) -> None:
 async def handle_incoming_message(message: IncomingMessage) -> None:
     logger.info(
         "Core received message: platform=%s, chat_id=%s, "
-        "message_id=%s, sender_id=%s, text=%s",
+        "message_id=%s, sender_id=%s",
         message.platform,
         message.chat_id,
         message.message_id,
         message.sender_id,
-        message.text,
     )
 
     await message_queue.put(message)

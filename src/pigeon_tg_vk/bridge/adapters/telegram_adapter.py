@@ -79,12 +79,9 @@ async def text_handler(message: Message) -> None:
         logger.info("Ignored message from bot: @%s", message.from_user.username)
         return
     
-    logger.info(
-        "Text handler triggered: chat_id=%s, message_id=%s, text=%s",
+    logger.info("Text handler triggered: chat_id=%s, message_id=%s, text=%s",
         message.chat.id,
-        message.message_id,
-        message.text,
-    )
+        message.message_id)
     if message.text is None or message.chat.type not in ("group", "supergroup"):
         return
     slot = reserve_slot()
@@ -119,14 +116,11 @@ async def text_handler(message: Message) -> None:
 
         logger.info(
             "Received message: platform=%s, chat_id=%s, "
-            "message_id=%s, sender_id=%s, sender_name=%s, text=%s",
+            "message_id=%s, sender_id=%s, sender_name=%s",
             incoming.platform,
             incoming.chat_id,
             incoming.message_id,
-            incoming.sender_id,
-            incoming.sender_name,
-            incoming.text,
-        )
+            incoming.sender_id)
     finally:
         resolve_slot(slot, None)
 
